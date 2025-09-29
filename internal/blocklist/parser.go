@@ -42,21 +42,21 @@ func ParseLine(line, listName string) string {
 	}
 
 	parsers := GetParsers()
-	
+
 	// Try specific parser first
 	if parser, exists := parsers[listName]; exists {
 		if matches := parser.Pattern.FindStringSubmatch(line); matches != nil {
 			return parser.Extract(matches)
 		}
 	}
-	
+
 	// Fallback to plain parser
 	if parser := parsers["plain"]; parser.Pattern.MatchString(line) {
 		if matches := parser.Pattern.FindStringSubmatch(line); matches != nil {
 			return parser.Extract(matches)
 		}
 	}
-	
+
 	return ""
 }
 

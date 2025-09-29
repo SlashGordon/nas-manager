@@ -42,36 +42,36 @@ func TestExtractAndMergeIPsWithFilters(t *testing.T) {
 	security.SetLogger(log)
 
 	tests := []struct {
-		name            string
+		name             string
 		filterCloudflare bool
-		filterLocal     bool
-		minExpected     int
-		maxExpected     int
-		description     string
+		filterLocal      bool
+		minExpected      int
+		maxExpected      int
+		description      string
 	}{
 		{
-			name:            "No filters",
+			name:             "No filters",
 			filterCloudflare: false,
-			filterLocal:     false,
-			minExpected:     10,
-			maxExpected:     15,
-			description:     "Should include all valid IPs",
+			filterLocal:      false,
+			minExpected:      10,
+			maxExpected:      15,
+			description:      "Should include all valid IPs",
 		},
 		{
-			name:            "Filter local only",
+			name:             "Filter local only",
 			filterCloudflare: false,
-			filterLocal:     true,
-			minExpected:     3,
-			maxExpected:     8,
-			description:     "Should exclude private/local IPs",
+			filterLocal:      true,
+			minExpected:      3,
+			maxExpected:      8,
+			description:      "Should exclude private/local IPs",
 		},
 		{
-			name:            "Filter both",
+			name:             "Filter both",
 			filterCloudflare: true,
-			filterLocal:     true,
-			minExpected:     2,
-			maxExpected:     6,
-			description:     "Should exclude both local and Cloudflare IPs",
+			filterLocal:      true,
+			minExpected:      2,
+			maxExpected:      6,
+			description:      "Should exclude both local and Cloudflare IPs",
 		},
 	}
 

@@ -18,8 +18,6 @@ func printLine(out *os.File, format string, args ...any) error {
 	return err
 }
 
-
-
 // ---------------- DSM ----------------
 
 func ApplyDSMHardening() error {

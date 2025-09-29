@@ -95,8 +95,6 @@ func ApplySSHHardening() error {
 	return nil
 }
 
-
-
 // isSSHRunning checks if the SSH service is running.
 func isSSHRunning() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
