@@ -2,7 +2,7 @@
 set -e
 
 # NAS Manager installer script
-REPO="SlashGordon/scripts"
+REPO="SlashGordon/nas-manager"
 BINARY_NAME="nas-manager"
 
 # Detect OS and architecture

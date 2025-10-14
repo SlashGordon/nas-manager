@@ -1,24 +1,28 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
+
+	"github.com/SlashGordon/nas-manager/internal/constants"
+	"github.com/SlashGordon/nas-manager/internal/fs"
+	"github.com/SlashGordon/nas-manager/internal/i18n"
 
 	"github.com/spf13/cobra"
 )
 
 var updateManagerCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update nas-manager to the latest version",
-	Run: func(cmd *cobra.Command, args []string) {
+	Short: i18n.T(i18n.CmdUpdateShort),
+	Run: func(_ *cobra.Command, _ []string) {
 		if err := updateBinary(); err != nil {
-			fmt.Printf("Update failed: %v\n", err)
+			log.Errorf(i18n.T(i18n.UpdateFailed), err)
 			os.Exit(1)
 		}
 	},
@@ -33,103 +37,126 @@ type GitHubRelease struct {
 }
 
 func updateBinary() error {
-	fmt.Println("Checking for updates...")
+	log.Info(i18n.T(i18n.UpdateChecking))
 
-	// Get latest release info
-	resp, err := http.Get("https://api.github.com/repos/SlashGordon/scripts/releases/latest")
+	release, err := getLatestRelease()
 	if err != nil {
-		return fmt.Errorf("failed to check for updates: %v", err)
-	}
-	defer resp.Body.Close()
-
-	var release GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return fmt.Errorf("failed to parse release info: %v", err)
+		return err
 	}
 
 	// Check if update is needed
 	if release.TagName == Version {
-		fmt.Printf("Already running the latest version: %s\n", Version)
+		log.Infof(i18n.T(i18n.UpdateLatest), Version)
 		return nil
 	}
 
-	fmt.Printf("New version available: %s (current: %s)\n", release.TagName, Version)
+	log.Infof(i18n.T(i18n.UpdateAvailable), release.TagName, Version)
 
-	// Find appropriate binary for current platform
-	binaryName := fmt.Sprintf("nas-manager-%s-%s", runtime.GOOS, runtime.GOARCH)
-	var downloadURL string
+	return downloadAndInstall(release)
+}
 
-	for _, asset := range release.Assets {
-		if asset.Name == binaryName {
-			downloadURL = asset.BrowserDownloadURL
-			break
-		}
+func getLatestRelease() (*GitHubRelease, error) {
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodGet,
+		"https://api.github.com/repos/SlashGordon/nas-manager/releases/latest",
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for updates: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var release GitHubRelease
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&release); decodeErr != nil {
+		return nil, fmt.Errorf("failed to parse release info: %w", decodeErr)
+	}
+
+	return &release, nil
+}
+
+func downloadAndInstall(release *GitHubRelease) error {
+	binaryName := fmt.Sprintf("nas-manager-%s-%s", runtime.GOOS, runtime.GOARCH)
+	downloadURL := findAssetURL(release, binaryName)
 
 	if downloadURL == "" {
 		return fmt.Errorf("no binary found for platform %s-%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	fmt.Printf("Downloading %s...\n", binaryName)
+	log.Infof(i18n.T(i18n.UpdateDownloading), binaryName)
 
-	// Download new binary
-	resp, err = http.Get(downloadURL)
+	resp, err := http.Get(downloadURL)
 	if err != nil {
-		return fmt.Errorf("failed to download update: %v", err)
+		return fmt.Errorf("failed to download update: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Get current executable path
+	return installBinary(resp.Body, release)
+}
+
+func findAssetURL(release *GitHubRelease, binaryName string) string {
+	for _, asset := range release.Assets {
+		if asset.Name == binaryName {
+			return asset.BrowserDownloadURL
+		}
+	}
+	return ""
+}
+
+func installBinary(body io.Reader, release *GitHubRelease) error {
 	execPath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("failed to get executable path: %v", err)
+		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	// Create temporary file
 	tmpFile := execPath + ".tmp"
-	out, err := os.Create(tmpFile)
+	out, err := fs.Create(tmpFile)
 	if err != nil {
-		return fmt.Errorf("failed to create temporary file: %v", err)
+		return fmt.Errorf("failed to create temporary file: %w", err)
 	}
 	defer out.Close()
 
-	// Copy downloaded content
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		os.Remove(tmpFile)
-		return fmt.Errorf("failed to write update: %v", err)
+	if _, err := io.Copy(out, body); err != nil {
+		fs.Remove(tmpFile)
+		return fmt.Errorf("failed to write update: %w", err)
 	}
+
 	out.Close()
 
-	// Make executable
-	if err := os.Chmod(tmpFile, 0755); err != nil {
-		os.Remove(tmpFile)
-		return fmt.Errorf("failed to make binary executable: %v", err)
+	if err := os.Chmod(tmpFile, constants.FilePermission0755); err != nil {
+		fs.Remove(tmpFile)
+		return fmt.Errorf("failed to make binary executable: %w", err)
 	}
 
-	// Replace current binary
+	return replaceBinary(tmpFile, execPath, release)
+}
+
+func replaceBinary(tmpFile, execPath string, release *GitHubRelease) error {
 	if runtime.GOOS == "windows" {
-		// On Windows, rename current binary and replace
 		oldFile := execPath + ".old"
-		if err := os.Rename(execPath, oldFile); err != nil {
-			os.Remove(tmpFile)
-			return fmt.Errorf("failed to backup current binary: %v", err)
+		if renameErr := fs.Rename(execPath, oldFile); renameErr != nil {
+			fs.Remove(tmpFile)
+			return fmt.Errorf("failed to backup current binary: %w", renameErr)
 		}
-		if err := os.Rename(tmpFile, execPath); err != nil {
-			os.Rename(oldFile, execPath) // Restore backup
-			return fmt.Errorf("failed to replace binary: %v", err)
+		if renameErr := fs.Rename(tmpFile, execPath); renameErr != nil {
+			fs.Rename(oldFile, execPath)
+			return fmt.Errorf("failed to replace binary: %w", renameErr)
 		}
-		os.Remove(oldFile)
+		fs.Remove(oldFile)
 	} else {
-		// On Unix-like systems, use mv command
-		if err := exec.Command("mv", tmpFile, execPath).Run(); err != nil {
-			os.Remove(tmpFile)
-			return fmt.Errorf("failed to replace binary: %v", err)
+		if moveErr := fs.MoveFile(tmpFile, execPath); moveErr != nil {
+			fs.Remove(tmpFile)
+			return fmt.Errorf("failed to replace binary: %w", moveErr)
 		}
 	}
 
-	fmt.Printf("Successfully updated to version %s\n", release.TagName)
-	fmt.Println("Please restart the application to use the new version.")
+	log.Infof(i18n.T(i18n.UpdateSuccess), release.TagName)
+	log.Info(i18n.T(i18n.UpdateRestart))
 
 	return nil
 }

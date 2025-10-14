@@ -12,6 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SlashGordon/nas-manager/internal/constants"
+	"github.com/SlashGordon/nas-manager/internal/fs"
+	"github.com/SlashGordon/nas-manager/internal/i18n"
+
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/lego"
@@ -22,29 +26,29 @@ import (
 
 var acmeCmd = &cobra.Command{
 	Use:   "acme",
-	Short: "ACME certificate management",
-	Long:  "Issue and renew Let's Encrypt certificates via Lego and Cloudflare DNS-01 challenge",
+	Short: i18n.T(i18n.CmdACMEShort),
+	Long:  i18n.T(i18n.CmdACMELong),
 }
 
 var issueCmd = &cobra.Command{
 	Use:   "issue",
-	Short: "Issue/renew certificate",
-	Run: func(cmd *cobra.Command, args []string) {
+	Short: i18n.T(i18n.CmdACMEIssueShort),
+	Run: func(_ *cobra.Command, _ []string) {
 		config := getAcmeConfig()
 
 		if config.CFToken == "" || config.Domain == "" || config.Email == "" {
-			fmt.Println("Error: CF_API_TOKEN, ACME_DOMAIN, and ACME_EMAIL environment variables are required")
+			log.Error(i18n.T(i18n.ACMEError))
 			os.Exit(1)
 		}
 
-		fmt.Printf("Issuing certificate for domain: %s\n", config.Domain)
+		log.Infof(i18n.T(i18n.ACMEIssuing), config.Domain)
 
 		if err := issueCertificate(config); err != nil {
-			fmt.Printf("Certificate issue failed: %v\n", err)
+			log.Errorf(i18n.T(i18n.ACMEFailed), err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Certificate for %s issued successfully.\n", config.Domain)
+		log.Infof(i18n.T(i18n.ACMESuccess), config.Domain)
 	},
 }
 
@@ -57,10 +61,10 @@ type AcmeConfig struct {
 
 func getAcmeConfig() AcmeConfig {
 	return AcmeConfig{
-		Domain:   getEnv("ACME_DOMAIN", ""),
-		CertPath: getEnv("ACME_CERT_PATH", "./cert"),
-		Email:    getEnv("ACME_EMAIL", ""),
-		CFToken:  getEnv("CF_API_TOKEN", ""),
+		Domain:   GetEnv("ACME_DOMAIN", ""),
+		CertPath: GetEnv("ACME_CERT_PATH", "./cert"),
+		Email:    GetEnv("ACME_EMAIL", ""),
+		CFToken:  GetEnv("CF_API_TOKEN", ""),
 	}
 }
 
@@ -83,13 +87,17 @@ func issueCertificate(config AcmeConfig) error {
 		return err
 	}
 
-	os.Setenv("CLOUDFLARE_DNS_API_TOKEN", config.CFToken)
+	if err := os.Setenv("CLOUDFLARE_DNS_API_TOKEN", config.CFToken); err != nil {
+		return fmt.Errorf("failed to set environment variable: %w", err)
+	}
 	provider, err := cloudflare.NewDNSProvider()
 	if err != nil {
 		return err
 	}
 
-	client.Challenge.SetDNS01Provider(provider)
+	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
+		return fmt.Errorf("failed to set DNS provider: %w", err)
+	}
 
 	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
 	if err != nil {
@@ -111,15 +119,15 @@ func issueCertificate(config AcmeConfig) error {
 	usingFallback := false
 
 	// Try to create directory and test write permissions
-	if err := os.MkdirAll(certPath, 0755); err != nil {
+	if err := fs.MkdirAll(certPath, 0750); err != nil {
 		usingFallback = true
 	} else {
 		// Test write permissions by creating a temporary file
 		testFile := filepath.Join(certPath, ".write_test")
-		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		if err := fs.WriteFile(testFile, []byte("test"), 0600); err != nil {
 			usingFallback = true
 		} else {
-			os.Remove(testFile)
+			fs.Remove(testFile)
 		}
 	}
 
@@ -127,9 +135,9 @@ func issueCertificate(config AcmeConfig) error {
 		dateStr := time.Now().Format("2006-01-02")
 		domainSafe := strings.ReplaceAll(config.Domain, ".", "_")
 		certPath = fmt.Sprintf("./certs/%s-%s", domainSafe, dateStr)
-		fmt.Printf("Permission denied for %s, using fallback directory: %s\n", config.CertPath, certPath)
-		if err := os.MkdirAll(certPath, 0755); err != nil {
-			return fmt.Errorf("failed to create fallback directory: %v", err)
+		log.Warnf(i18n.T(i18n.ACMEPermissionDenied), config.CertPath, certPath)
+		if err := fs.MkdirAll(certPath, 0750); err != nil {
+			return fmt.Errorf("failed to create fallback directory: %w", err)
 		}
 	}
 
@@ -144,21 +152,18 @@ func issueCertificate(config AcmeConfig) error {
 	}
 
 	for filename, content := range files {
-		perm := os.FileMode(0644)
-		if filepath.Ext(filename) == ".key" || filename == "privkey.pem" {
-			perm = 0600
-		}
-		if err := os.WriteFile(filepath.Join(certPath, filename), content, perm); err != nil {
-			return fmt.Errorf("failed to write %s: %v", filename, err)
+		perm := os.FileMode(constants.FilePermission0600)
+		if writeErr := fs.WriteFile(filepath.Join(certPath, filename), content, perm); writeErr != nil {
+			return fmt.Errorf("failed to write %s: %w", filename, writeErr)
 		}
 	}
 
 	if usingFallback {
-		fmt.Printf("Certificates saved to fallback directory: %s\n", certPath)
-		fmt.Printf("Please manually copy certificates to: %s\n", config.CertPath)
-		fmt.Printf("Run: sudo cp %s/* %s/\n", certPath, config.CertPath)
+		log.Infof(i18n.T(i18n.ACMESaved), certPath)
+		log.Infof(i18n.T(i18n.ACMECopy), config.CertPath)
+		log.Infof("Run: sudo cp %s/* %s/", certPath, config.CertPath)
 	} else {
-		exec.Command("/usr/syno/sbin/synoservicectl", "--reload", "nginx").Run()
+		exec.Command(constants.SynoServiceCtlPath, "--reload", "nginx").Run()
 	}
 
 	return nil

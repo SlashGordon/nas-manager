@@ -3,9 +3,11 @@
 package main
 
 import (
-	"github.com/SlashGordon/scripts/cmd"
+	"github.com/SlashGordon/nas-manager/cmd"
+	"github.com/SlashGordon/nas-manager/internal/logger"
 )
 
 func main() {
-	cmd.Execute()
+	log := logger.NewCLILogger()
+	cmd.Execute(log)
 }

@@ -11,3 +11,29 @@ DDNS_CACHE_FILE=/var/services/homes/admin/.cloudflare-ddns.cache
 ACME_DOMAIN=internal.slash.de
 ACME_CERT_PATH=/usr/syno/etc/certificate/system/default
 ACME_EMAIL=your@email.com
+
+# Security configuration
+SECURITY_CHAIN=BLOCKLIST
+
+# Available default lists (comma-separated):
+# Safe & General: firehol_level1, firehol_level2, spamhaus_drop, spamhaus_edrop, dshield
+# Malware & Botnets: feodo_tracker, sslbl_botnet, threatfox
+# Brute Force / Abuse: ci_army, blocklist_de
+# Privacy / TOR: tor_exits
+# Aggregated: ipsum
+SECURITY_DEFAULT_LISTS=firehol_level1,spamhaus_drop,dshield
+
+# Custom lists (replaces defaults when set): name=url,name2=url2
+# Supports URLs and local files: name=https://example.com/list.txt,local=/path/to/file.txt
+# SECURITY_CUSTOM_LISTS=custom_list=https://example.com/blocklist.txt,local_list=/etc/blocklist.txt
+
+# Port scan detection
+PORTSCAN_THRESHOLD=10
+PORTSCAN_WINDOW=60
+
+# Vulnerability scanning
+VULNSCAN_TARGET=localhost
+VULNSCAN_PORTS=22,80,443,5000,5001,873,548,139,445,2049
+
+# Shell hardening
+SHELL_HIST_SIZE=3

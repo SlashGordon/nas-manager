@@ -1,20 +1,22 @@
-package cmd
+package cmd_test
 
 import (
 	"os"
 	"testing"
+
+	"github.com/SlashGordon/nas-manager/cmd"
 )
 
 func TestGetEnv(t *testing.T) {
 	// Test with existing env var
-	os.Setenv("TEST_VAR", "test_value")
-	result := getEnv("TEST_VAR", "default")
+	t.Setenv("TEST_VAR", "test_value")
+	result := cmd.GetEnv("TEST_VAR", "default")
 	if result != "test_value" {
 		t.Errorf("Expected 'test_value', got '%s'", result)
 	}
 
 	// Test with default value
-	result = getEnv("NON_EXISTENT_VAR", "default")
+	result = cmd.GetEnv("NON_EXISTENT_VAR", "default")
 	if result != "default" {
 		t.Errorf("Expected 'default', got '%s'", result)
 	}
@@ -23,20 +25,20 @@ func TestGetEnv(t *testing.T) {
 }
 
 func TestGetDDNSConfig(t *testing.T) {
-	os.Setenv("CF_API_TOKEN", "test_token")
-	os.Setenv("CF_ZONE_ID", "test_zone")
-	os.Setenv("CF_RECORD_NAME", "test.example.com")
+	t.Setenv("CF_API_TOKEN", "test_token")
+	t.Setenv("CF_ZONE_ID", "test_zone")
+	t.Setenv("CF_RECORD_NAME", "test.example.com")
 
-	config := getDDNSConfig()
+	config := cmd.GetDDNSConfig()
 
-	if config.APIToken != "test_token" {
-		t.Errorf("Expected 'test_token', got '%s'", config.APIToken)
+	if config.CFToken != "test_token" {
+		t.Errorf("Expected 'test_token', got '%s'", config.CFToken)
 	}
-	if config.ZoneID != "test_zone" {
-		t.Errorf("Expected 'test_zone', got '%s'", config.ZoneID)
+	if config.CFZoneID != "test_zone" {
+		t.Errorf("Expected 'test_zone', got '%s'", config.CFZoneID)
 	}
-	if config.RecordName != "test.example.com" {
-		t.Errorf("Expected 'test.example.com', got '%s'", config.RecordName)
+	if config.CFRecordName != "test.example.com" {
+		t.Errorf("Expected 'test.example.com', got '%s'", config.CFRecordName)
 	}
 
 	os.Unsetenv("CF_API_TOKEN")
@@ -45,12 +47,12 @@ func TestGetDDNSConfig(t *testing.T) {
 }
 
 func TestGetAcmeConfig(t *testing.T) {
-	os.Setenv("CF_API_TOKEN", "test_token")
-	os.Setenv("ACME_DOMAIN", "test.example.com")
-	os.Setenv("ACME_EMAIL", "test@example.com")
-	os.Setenv("ACME_CERT_PATH", "/custom/cert/path")
+	t.Setenv("CF_API_TOKEN", "test_token")
+	t.Setenv("ACME_DOMAIN", "test.example.com")
+	t.Setenv("ACME_EMAIL", "test@example.com")
+	t.Setenv("ACME_CERT_PATH", "/custom/cert/path")
 
-	config := getAcmeConfig()
+	config := cmd.GetAcmeConfig()
 
 	if config.CFToken != "test_token" {
 		t.Errorf("Expected 'test_token', got '%s'", config.CFToken)
@@ -73,7 +75,7 @@ func TestGetAcmeConfig(t *testing.T) {
 
 func TestGetAcmeConfigDefaults(t *testing.T) {
 	// Test default values when env vars are not set
-	config := getAcmeConfig()
+	config := cmd.GetAcmeConfig()
 
 	if config.CertPath != "./cert" {
 		t.Errorf("Expected default cert path './cert', got '%s'", config.CertPath)

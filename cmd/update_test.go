@@ -1,4 +1,4 @@
-package cmd
+package cmd_test
 
 import (
 	"encoding/json"
@@ -7,11 +7,13 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/SlashGordon/nas-manager/cmd"
 )
 
 func TestUpdateBinaryAlreadyLatest(t *testing.T) {
 	// Mock GitHub API response
-	release := GitHubRelease{
+	release := cmd.GitHubRelease{
 		TagName: "v1.0.0",
 		Assets: []struct {
 			Name               string `json:"name"`
@@ -24,16 +26,11 @@ func TestUpdateBinaryAlreadyLatest(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(release)
 	}))
 	defer server.Close()
-
-	// Temporarily set Version to match release
-	originalVersion := Version
-	Version = "v1.0.0"
-	defer func() { Version = originalVersion }()
 
 	// This would normally call the real GitHub API, but we can't easily mock that
 	// in the current implementation. This test verifies the struct parsing works.
@@ -43,7 +40,7 @@ func TestUpdateBinaryAlreadyLatest(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var testRelease GitHubRelease
+	var testRelease cmd.GitHubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&testRelease); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -61,7 +58,7 @@ func TestUpdateBinaryPlatformDetection(t *testing.T) {
 	expectedBinaryName := "nas-manager-" + runtime.GOOS + "-" + runtime.GOARCH
 
 	// Mock release with multiple assets
-	release := GitHubRelease{
+	release := cmd.GitHubRelease{
 		TagName: "v1.1.0",
 		Assets: []struct {
 			Name               string `json:"name"`
@@ -115,12 +112,12 @@ func TestGitHubReleaseStruct(t *testing.T) {
 		"assets": [
 			{
 				"name": "nas-manager-linux-amd64",
-				"browser_download_url": "https://github.com/SlashGordon/scripts/releases/download/v1.2.3/nas-manager-linux-amd64"
+				"browser_download_url": "https://github.com/SlashGordon/nas-manager/releases/download/v1.2.3/nas-manager-linux-amd64"
 			}
 		]
 	}`
 
-	var release GitHubRelease
+	var release cmd.GitHubRelease
 	if err := json.Unmarshal([]byte(jsonData), &release); err != nil {
 		t.Fatalf("Failed to unmarshal JSON: %v", err)
 	}
@@ -139,22 +136,14 @@ func TestGitHubReleaseStruct(t *testing.T) {
 }
 
 func TestUpdateCommandRegistration(t *testing.T) {
-	// Test that update command is only registered for non-dev versions
-	originalVersion := Version
-
-	// Test with dev version - command should not be registered
-	Version = "dev"
-	// We can't easily test command registration without refactoring,
-	// but we can test the condition
-	if !strings.Contains(Version, "dev") {
+	// Test version string patterns
+	devVersion := "dev"
+	if !strings.Contains(devVersion, "dev") {
 		t.Error("Expected dev version to contain 'dev'")
 	}
 
-	// Test with release version
-	Version = "v1.0.0"
-	if strings.Contains(Version, "dev") {
+	releaseVersion := "v1.0.0"
+	if strings.Contains(releaseVersion, "dev") {
 		t.Error("Expected release version to not contain 'dev'")
 	}
-
-	Version = originalVersion
 }

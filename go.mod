@@ -1,9 +1,10 @@
-module github.com/SlashGordon/scripts
+module github.com/SlashGordon/nas-manager
 
 go 1.24.0
 
 require (
 	github.com/go-acme/lego/v4 v4.26.0
+	github.com/spf13/afero v1.15.0
 	github.com/spf13/cobra v1.10.1
 )
 

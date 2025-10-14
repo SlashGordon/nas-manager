@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SlashGordon/nas-manager/internal/fs"
 	"github.com/spf13/cobra"
 )
 
@@ -23,191 +26,186 @@ var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update DNS records",
 	Run: func(cmd *cobra.Command, args []string) {
+		_, _ = cmd, args
 		config := getDDNSConfig()
-
-		if config.APIToken == "" || config.ZoneID == "" || config.RecordName == "" {
+		if config.CFToken == "" || config.CFZoneID == "" || config.CFRecordName == "" {
 			fmt.Println("Error: CF_API_TOKEN, CF_ZONE_ID, and CF_RECORD_NAME environment variables are required")
 			os.Exit(1)
 		}
 
-		currentIP := getCurrentIP("https://api.ipify.org")
-		currentIPv6 := getCurrentIP("https://api6.ipify.org")
-
-		if currentIP == "" && currentIPv6 == "" {
-			logError("could not get current public IPs", config.LogFile)
+		currentIP, err := getCurrentIP()
+		if err != nil {
+			fmt.Printf("Failed to get current IP: %v\n", err)
 			os.Exit(1)
 		}
 
-		cachedIP4, cachedIP6 := readCache(config.CacheFile)
-
-		// Update IPv4
-		if currentIP != "" && currentIP != cachedIP4 {
-			if updateRecord(config, "A", currentIP) {
-				cachedIP4 = currentIP
-				logInfo(fmt.Sprintf("Updated A %s → %s", config.RecordName, currentIP), config.LogFile)
-			}
-		} else {
-			logInfo(fmt.Sprintf("IPv4 unchanged (%s)", currentIP), config.LogFile)
+		recordID, currentRecordIP, err := getDNSRecord(config)
+		if err != nil {
+			fmt.Printf("Failed to get DNS record: %v\n", err)
+			os.Exit(1)
 		}
 
-		// Update IPv6
-		if currentIPv6 != "" && currentIPv6 != cachedIP6 {
-			if updateRecord(config, "AAAA", currentIPv6) {
-				cachedIP6 = currentIPv6
-				logInfo(fmt.Sprintf("Updated AAAA %s → %s", config.RecordName, currentIPv6), config.LogFile)
-			}
-		} else {
-			logInfo(fmt.Sprintf("IPv6 unchanged (%s)", currentIPv6), config.LogFile)
+		if currentRecordIP == currentIP {
+			fmt.Printf("%s unchanged (%s)\n", config.CFRecordName, currentIP)
+			logDDNS(fmt.Sprintf("%s unchanged (%s)", config.CFRecordName, currentIP))
+			return
 		}
 
-		writeCache(config.CacheFile, cachedIP4, cachedIP6)
+		if err := updateDNSRecord(config, recordID, currentIP); err != nil {
+			fmt.Printf("%s update failed: %v\n", config.CFRecordName, err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Updated %s %s → %s\n", config.CFRecordName, currentRecordIP, currentIP)
+		logDDNS(fmt.Sprintf("Updated %s %s → %s", config.CFRecordName, currentRecordIP, currentIP))
 	},
 }
 
 type DDNSConfig struct {
-	APIToken   string
-	ZoneID     string
-	RecordName string
-	LogFile    string
-	CacheFile  string
+	CFToken      string
+	CFZoneID     string
+	CFRecordName string
 }
 
 func getDDNSConfig() DDNSConfig {
 	return DDNSConfig{
-		APIToken:   getEnv("CF_API_TOKEN", ""),
-		ZoneID:     getEnv("CF_ZONE_ID", ""),
-		RecordName: getEnv("CF_RECORD_NAME", ""),
-		LogFile:    getEnv("DDNS_LOG_FILE", "./ddns.log"),
-		CacheFile:  getEnv("DDNS_CACHE_FILE", "./.ddns.cache"),
+		CFToken:      os.Getenv("CF_API_TOKEN"),
+		CFZoneID:     os.Getenv("CF_ZONE_ID"),
+		CFRecordName: os.Getenv("CF_RECORD_NAME"),
 	}
 }
 
-func getCurrentIP(url string) string {
-	resp, err := http.Get(url)
+func getCurrentIP() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org", nil)
 	if err != nil {
-		return ""
+		return "", err
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ""
+	var result strings.Builder
+	if _, err := io.Copy(&result, resp.Body); err != nil {
+		return "", err
 	}
 
-	return strings.TrimSpace(string(body))
+	return strings.TrimSpace(result.String()), nil
 }
 
-func updateRecord(config DDNSConfig, recordType, ip string) bool {
-	recordID := getRecordID(config, recordType)
-	if recordID == "" {
-		logError(fmt.Sprintf("%s record %s not found", recordType, config.RecordName), config.LogFile)
-		return false
-	}
+func updateDNSRecord(config DDNSConfig, recordID, newIP string) error {
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", config.CFZoneID, recordID)
 
 	data := map[string]interface{}{
-		"type":    recordType,
-		"name":    config.RecordName,
-		"content": ip,
-		"proxied": true,
+		"type":    "A",
+		"name":    config.CFRecordName,
+		"content": newIP,
+		"ttl":     1,
 	}
 
-	jsonData, _ := json.Marshal(data)
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
 
-	req, _ := http.NewRequest("PUT", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", config.ZoneID, recordID), bytes.NewBuffer(jsonData))
-	req.Header.Set("Authorization", "Bearer "+config.APIToken)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.CFToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		logError(fmt.Sprintf("%s update failed: %v", recordType, err), config.LogFile)
-		return false
+		return err
 	}
 	defer resp.Body.Close()
 
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
-
-	if success, ok := result["success"].(bool); ok && success {
-		return true
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API request failed with status: %d", resp.StatusCode)
 	}
 
-	logError(fmt.Sprintf("%s update failed", recordType), config.LogFile)
-	return false
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+
+	if success, ok := result["success"].(bool); !ok || !success {
+		return errors.New("API request was not successful")
+	}
+
+	return nil
 }
 
-func getRecordID(config DDNSConfig, recordType string) string {
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?name=%s&type=%s", config.ZoneID, config.RecordName, recordType)
+func getDNSRecord(config DDNSConfig) (string, string, error) {
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?name=%s&type=A", config.CFZoneID, config.CFRecordName)
 
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", "Bearer "+config.APIToken)
-	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	client := &http.Client{}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.CFToken)
+
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ""
+		return "", "", err
 	}
 	defer resp.Body.Close()
 
 	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", err
+	}
 
 	if resultArray, ok := result["result"].([]interface{}); ok && len(resultArray) > 0 {
 		if record, ok := resultArray[0].(map[string]interface{}); ok {
 			if id, ok := record["id"].(string); ok {
-				return id
+				if content, ok := record["content"].(string); ok {
+					return id, content, nil
+				}
 			}
 		}
 	}
 
-	return ""
+	return "", "", fmt.Errorf("%s record %s not found", "A", config.CFRecordName)
 }
 
-func readCache(cacheFile string) (string, string) {
-	data, err := os.ReadFile(cacheFile)
+func logDDNS(message string) {
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "", ""
+		return
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) >= 2 {
-		return lines[0], lines[1]
-	}
-	if len(lines) == 1 {
-		return lines[0], ""
-	}
-
-	return "", ""
-}
-
-func writeCache(cacheFile, ip4, ip6 string) {
-	content := ip4 + "\n" + ip6
-	os.WriteFile(cacheFile, []byte(content), 0644)
-}
-
-func logInfo(msg, logFile string) {
-	logMessage("INFO", msg, logFile)
-}
-
-func logError(msg, logFile string) {
-	logMessage("ERROR", msg, logFile)
-}
-
-func logMessage(level, msg, logFile string) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	logLine := fmt.Sprintf("%s %s: %s\n", timestamp, level, msg)
-
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	logFile := fmt.Sprintf("%s/.ddns.log", homeDir)
+	f, err := fs.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
-		fmt.Print(logLine)
 		return
 	}
 	defer f.Close()
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	logLine := fmt.Sprintf("[%s] %s\n", timestamp, message)
+
+	fs.WriteFile(fmt.Sprintf("%s/.ddns_cache", homeDir), []byte(fmt.Sprintf("%s|%s", timestamp, message)), 0600)
 
 	f.WriteString(logLine)
 }
 
 func init() {
 	ddnsCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(ddnsCmd)
 }

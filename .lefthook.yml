@@ -1,0 +1,25 @@
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.go"
+      run: go fmt {staged_files}
+    vet:
+      glob: "*.go" 
+      run: go vet ./...
+    test:
+      glob: "*.go"
+      run: go test ./...
+    lint:
+      glob: "*.go"
+      run: golangci-lint run {staged_files}
+    mod-tidy:
+      glob: "{go.mod,go.sum}"
+      run: go mod tidy
+
+pre-push:
+  commands:
+    test-all:
+      run: go test -race -coverprofile=coverage.out ./...
+    build:
+      run: make build
