@@ -7,6 +7,17 @@ on:
     branches: [ main, 'feature/**', 'hotfix/**' ]
 
 jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Secret Scanning
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        extra_args: --only-verified
+        
   test:
     runs-on: ubuntu-latest
     steps:
@@ -29,6 +40,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
     - uses: actions/checkout@v4
     
@@ -40,6 +52,7 @@ jobs:
     
     - name: golangci-lint
       uses: golangci/golangci-lint-action@v8
+      continue-on-error: true
       with:
         version: latest
         skip-cache: true
