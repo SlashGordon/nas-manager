@@ -30,6 +30,32 @@ release: clean build-all
 	@echo "Built binaries:"
 	@ls -la bin/
 
+tag-list:
+	@latest_tag=$$(git describe --tags --abbrev=0 2>/dev/null); \
+	if [ -z "$$latest_tag" ]; then \
+		echo "No tags found"; \
+	else \
+		echo "Latest tag: $$latest_tag"; \
+	fi
+
+tag:
+	@read -p "Enter version (e.g., v1.0.0): " version; \
+	git tag -a "$$version" -m "Release $$version"; \
+	echo "Tag $$version created"
+
+tag-push:
+	@latest_tag=$$(git describe --tags --abbrev=0 2>/dev/null); \
+	if [ -z "$$latest_tag" ]; then \
+		echo "No tags found"; \
+		exit 1; \
+	fi; \
+	echo "Pushing tag $$latest_tag..."; \
+	git push origin "$$latest_tag"
+
+tag-release: tag tag-push
+	@echo "Tag created and pushed. GitHub Actions will handle the release."
+
+
 # Development tools
 fmt:
 	go fmt ./...
