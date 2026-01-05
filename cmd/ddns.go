@@ -6,13 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/SlashGordon/nas-manager/internal/fs"
+	"github.com/SlashGordon/nas-manager/internal/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -78,25 +77,11 @@ func getDDNSConfig() DDNSConfig {
 func getCurrentIP() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org", nil)
+	ipv4, _, err := utils.GetPublicIP(ctx)
 	if err != nil {
 		return "", err
 	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var result strings.Builder
-	if _, err := io.Copy(&result, resp.Body); err != nil {
-		return "", err
-	}
-
-	return strings.TrimSpace(result.String()), nil
+	return ipv4, nil
 }
 
 func updateDNSRecord(config DDNSConfig, recordID, newIP string) error {

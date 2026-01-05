@@ -1,0 +1,106 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(dev-deps)"
+    groups:
+      spf13:
+        patterns:
+          - "github.com/spf13/*"
+        update-types:
+          - "minor"
+          - "patch"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+        update-types:
+          - "minor"
+          - "patch"
+      acme-lego:
+        patterns:
+          - "github.com/go-acme/lego*"
+        update-types:
+          - "minor"
+          - "patch"
+      dns:
+        patterns:
+          - "github.com/miekg/dns*"
+        update-types:
+          - "minor"
+          - "patch"
+      backoff:
+        patterns:
+          - "github.com/cenkalti/backoff*"
+        update-types:
+          - "minor"
+          - "patch"
+      jose:
+        patterns:
+          - "github.com/go-jose/*"
+        update-types:
+          - "minor"
+          - "patch"
+      misc-go:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "github.com/spf13/*"
+          - "golang.org/x/*"
+          - "github.com/go-acme/lego*"
+          - "github.com/miekg/dns*"
+          - "github.com/cenkalti/backoff*"
+          - "github.com/go-jose/*"
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(actions)"
+    groups:
+      core-actions:
+        patterns:
+          - "actions/checkout*"
+          - "actions/cache*"
+        update-types:
+          - "minor"
+          - "patch"
+      setup-actions:
+        patterns:
+          - "actions/setup-*"
+        update-types:
+          - "minor"
+          - "patch"
+      go-ci-actions:
+        patterns:
+          - "actions/setup-go*"
+          - "golangci/golangci-lint-action*"
+        update-types:
+          - "minor"
+          - "patch"
+      misc-actions:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "actions/checkout*"
+          - "actions/cache*"
+          - "actions/setup-*"
+          - "actions/setup-go*"
+          - "golangci/golangci-lint-action*"
+        update-types:
+          - "minor"
+          - "patch"
