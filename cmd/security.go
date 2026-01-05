@@ -17,4 +17,5 @@ func init() {
 	securityCmd.AddCommand(security.PortscanCmd)
 	securityCmd.AddCommand(security.VulnscanCmd)
 	securityCmd.AddCommand(security.HardenCmd)
+	securityCmd.AddCommand(security.CloudflareCmd)
 }
