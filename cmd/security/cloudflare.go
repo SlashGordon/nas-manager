@@ -79,6 +79,38 @@ func NewCloudflareClient(apiToken string) *CloudflareClient {
 	}
 }
 
+// getIPv6NetworkIdentifier extracts the network identifier (first 64 bits) from an IPv6 address
+func getIPv6NetworkIdentifier(ipv6 string) string {
+	if ipv6 == "" {
+		return ""
+	}
+	// Split the IPv6 address into parts
+	parts := strings.Split(ipv6, ":")
+	if len(parts) < 4 {
+		return ""
+	}
+	// Take first 4 parts (64 bits) and add :: to indicate network prefix
+	return strings.Join(parts[:4], ":") + "::"
+}
+
+// getIPv6InterfaceIdentifier extracts the interface identifier (last 64 bits) from an IPv6 address
+func getIPv6InterfaceIdentifier(ipv6 string) string {
+	if ipv6 == "" {
+		return ""
+	}
+	// Split the IPv6 address into parts
+	parts := strings.Split(ipv6, ":")
+	if len(parts) < 4 {
+		return ""
+	}
+	// Take last 4 parts (64 bits) and add :: prefix
+	if len(parts) >= 8 {
+		return "::" + strings.Join(parts[4:], ":")
+	}
+	// Handle compressed notation
+	return ipv6
+}
+
 // ReplacePlaceholders replaces placeholders in expressions with actual values
 func ReplacePlaceholders(expression string, ipv4, ipv6 string) string {
 	replacer := strings.NewReplacer(
@@ -107,6 +139,27 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) string {
 		}
 		return match
 	})
+
+	// Support {{PUBLIC_IPV6_NETWORK}} for network identifier (first 64 bits)
+	networkRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_NETWORK\}\}`)
+	result = networkRegex.ReplaceAllString(result, getIPv6NetworkIdentifier(ipv6))
+
+	// Support {{PUBLIC_IPV6_NETWORK/prefix}} for network identifier with custom prefix
+	networkCIDRRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_NETWORK/(\d+)\}\}`)
+	result = networkCIDRRegex.ReplaceAllStringFunc(result, func(match string) string {
+		cidr := networkCIDRRegex.FindStringSubmatch(match)[1]
+		network := getIPv6NetworkIdentifier(ipv6)
+		if network != "" {
+			// Remove trailing :: and add CIDR notation
+			network = strings.TrimSuffix(network, "::")
+			return fmt.Sprintf("%s::/%s", network, cidr)
+		}
+		return match
+	})
+
+	// Support {{PUBLIC_IPV6_INTERFACE}} for interface identifier (last 64 bits)
+	interfaceRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_INTERFACE\}\}`)
+	result = interfaceRegex.ReplaceAllString(result, getIPv6InterfaceIdentifier(ipv6))
 
 	return result
 }

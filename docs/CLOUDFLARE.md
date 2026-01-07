@@ -54,6 +54,9 @@ The tool supports the following placeholders:
 - `{{PUBLIC_IPV6}}` - Replaced with your current public IPv6 address
 - `{{PUBLIC_IPV4/24}}` - Replaced with your IPv4 address + /24 CIDR notation
 - `{{PUBLIC_IPV6/64}}` - Replaced with your IPv6 address + /64 CIDR notation
+- `{{PUBLIC_IPV6_NETWORK}}` - Replaced with IPv6 network identifier (first 64 bits, e.g., `2001:db8:abcd:1234::`)
+- `{{PUBLIC_IPV6_NETWORK/64}}` - Replaced with IPv6 network identifier + CIDR notation (e.g., `2001:db8:abcd:1234::/64`)
+- `{{PUBLIC_IPV6_INTERFACE}}` - Replaced with IPv6 interface identifier (last 64 bits, e.g., `::5678:90ab:cdef:1234`)
 
 #### Example: Allow Only Your Current IP
 
@@ -87,6 +90,28 @@ nas-manager security cloudflare \
   --action="block" \
   --description="Allow office and home IPs" \
   --expression='not ip.src in {{{PUBLIC_IPV4}} 203.0.113.0/24 198.51.100.0/24}'
+```
+
+#### Example: IPv6 Network-Based Access Control
+
+```bash
+nas-manager security cloudflare \
+  --zone-id="your-zone-id" \
+  --ruleset-id="your-ruleset-id" \
+  --action="block" \
+  --description="Allow only my IPv6 network" \
+  --expression='not ip.src in {{{PUBLIC_IPV6_NETWORK/64}}}'
+```
+
+#### Example: IPv6 Interface Identifier Matching
+
+```bash
+nas-manager security cloudflare \
+  --zone-id="your-zone-id" \
+  --ruleset-id="your-ruleset-id" \
+  --action="challenge" \
+  --description="Challenge traffic from specific interface IDs" \
+  --expression='ip.src in {{{PUBLIC_IPV6_INTERFACE}} ::1234:5678:90ab:cdef}'
 ```
 
 ### Command Options
