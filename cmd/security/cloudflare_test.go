@@ -63,6 +63,36 @@ func TestReplacePlaceholders(t *testing.T) {
 			ipv6:       "",
 			expected:   "ip.src in {203.0.113.0/24}",
 		},
+		{
+			name:       "Replace IPv6 network identifier",
+			expression: "ip.src in {{{PUBLIC_IPV6_NETWORK}}}",
+			ipv4:       "",
+			ipv6:       "2001:db8:abcd:1234:5678:90ab:cdef:1234",
+			expected:   "ip.src in {2001:db8:abcd:1234::}",
+		},
+		{
+			name:       "Replace IPv6 network identifier with CIDR",
+			expression: "ip.src in {{{PUBLIC_IPV6_NETWORK/64}}}",
+			ipv4:       "",
+			ipv6:       "2001:db8:abcd:1234:5678:90ab:cdef:1234",
+			expected:   "ip.src in {2001:db8:abcd:1234::/64}",
+		},
+		{
+			name:       "Replace IPv6 interface identifier",
+			expression: "ip.src in {{{PUBLIC_IPV6_INTERFACE}}}",
+			ipv4:       "",
+			ipv6:       "2001:db8:abcd:1234:5678:90ab:cdef:1234",
+			expected:   "ip.src in {::5678:90ab:cdef:1234}",
+		},
+		{
+			name: "Complex expression with IPv6 parts",
+			expression: "(not ip.src in {{{PUBLIC_IPV6_NETWORK/64}}} and http.host wildcard \"internal.example.com\") or " +
+				"(ip.src in {{{PUBLIC_IPV6_INTERFACE}}})",
+			ipv4: "",
+			ipv6: "2001:db8:abcd:1234:5678:90ab:cdef:1234",
+			expected: "(not ip.src in {2001:db8:abcd:1234::/64} and http.host wildcard \"internal.example.com\") or " +
+				"(ip.src in {::5678:90ab:cdef:1234})",
+		},
 	}
 
 	for _, tt := range tests {
