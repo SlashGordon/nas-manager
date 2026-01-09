@@ -79,6 +79,15 @@ Optional security variables:
 
 ## New Features
 
+### Cloudflare: Skip Unchanged Public IPs
+- Purpose: avoid unnecessary API calls when your public IPs did not change.
+- How it works: when your `--expression` contains dynamic placeholders (e.g., `{{PUBLIC_IPV4}}`, `{{PUBLIC_IPV6}}`, `{{PUBLIC_IPV6_NETWORK/64}}`), the command compares the current public IPv4/IPv6 with the last successful run and skips the upsert if both are unchanged.
+- Cache: stored at `~/.nas-manager/cache/cloudflare-ip.json` (or `${XDG_CACHE_HOME}/nas-manager`).
+- Flag:
+  - `--skip-unchanged` (default: `true`) — disable with `--skip-unchanged=false` to always call the API.
+- Example:
+  - `nas-manager security cloudflare --zone-id=... --ruleset-id=... --rule-id=... --action=block --enabled=true --skip-unchanged=true --expression='not ip.src in {{{PUBLIC_IPV6_NETWORK/64}} {{PUBLIC_IPV4}}}'`
+
 ### Regex-Based Blocklist Parsing
 Supports multiple blocklist formats:
 - **Plain IPs/CIDRs**: `192.168.1.1` or `192.168.1.0/24`
@@ -132,6 +141,13 @@ nas-manager security harden services
 nas-manager security harden shell
 nas-manager security harden kernel
 nas-manager security harden network
+
+### Cloudflare Usage
+- Placeholders: use triple braces to start a set, add more placeholders inside the set:
+  - Example: `not ip.src in {{{PUBLIC_IPV6_NETWORK/64}} {{PUBLIC_IPV4}}}` expands to `{<ipv6/64> <ipv4>}`
+- Skip unchanged (default true): add `--skip-unchanged=false` to force an API update.
+- Basic update example:
+  - `nas-manager security cloudflare --zone-id=... --ruleset-id=... --rule-id=... --action=block --enabled=true --expression='not ip.src in {{{PUBLIC_IPV6_NETWORK/64}} {{PUBLIC_IPV4}}}'`
 ```
 
 ## Building

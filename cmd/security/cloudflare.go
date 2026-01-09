@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -367,6 +368,16 @@ var CloudflareCmd = &cobra.Command{
 			}
 		}
 
+		// Skip API call if IPs unchanged and expression uses dynamic placeholders
+		usesDynamic := strings.Contains(cfExpr, "{{PUBLIC_")
+		if cfSkipUnchanged && usesDynamic {
+			lastV4, lastV6, _ := readLastIPs()
+			if ipv4 == lastV4 && ipv6 == lastV6 {
+				log.Info("No public IP change detected; skipping Cloudflare API call")
+				return nil
+			}
+		}
+
 		// Replace placeholders in expression
 		expression := ReplacePlaceholders(cfExpr, ipv4, ipv6)
 		if expression != cfExpr {
@@ -419,6 +430,11 @@ var CloudflareCmd = &cobra.Command{
 		log.Infof("Action: %s", result.Action)
 		log.Infof("Enabled: %v", result.Enabled)
 
+		// Persist current IPs for future change detection
+		if cfSkipUnchanged {
+			_ = writeLastIPs(ipv4, ipv6)
+		}
+
 		return nil
 	},
 }
@@ -432,8 +448,53 @@ func init() {
 	CloudflareCmd.Flags().BoolVar(&cfEnabled, "enabled", true, "Enable the rule")
 	CloudflareCmd.Flags().StringVar(&cfExpr, "expression", "", "Rule expression (required, supports {{PUBLIC_IP}}, {{PUBLIC_IPV4}}, {{PUBLIC_IPV6}} placeholders)")
 	CloudflareCmd.Flags().IntVar(&cfPosition, "position", 0, "Rule position index (0 for default)")
+	CloudflareCmd.Flags().BoolVar(&cfSkipUnchanged, "skip-unchanged", true, "Skip API call when public IPs have not changed since last successful run")
 
 	CloudflareCmd.MarkFlagRequired("zone-id")
 	CloudflareCmd.MarkFlagRequired("ruleset-id")
 	CloudflareCmd.MarkFlagRequired("expression")
+}
+
+// --- IP change cache helpers ---
+
+var cfSkipUnchanged bool
+
+func cacheDir() string {
+	// Prefer XDG cache if present, else ~/.nas-manager/cache
+	if d := os.Getenv("XDG_CACHE_HOME"); d != "" {
+		return filepath.Join(d, "nas-manager")
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(h, ".nas-manager", "cache")
+	}
+	// Fallback to current directory
+	return "."
+}
+
+func cacheFilePath() string {
+	return filepath.Join(cacheDir(), "cloudflare-ip.json")
+}
+
+func readLastIPs() (string, string, error) {
+	type ipStore struct{ IPv4, IPv6 string }
+	path := cacheFilePath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	var s ipStore
+	if err := json.Unmarshal(b, &s); err != nil {
+		return "", "", err
+	}
+	return s.IPv4, s.IPv6, nil
+}
+
+func writeLastIPs(v4, v6 string) error {
+	type ipStore struct{ IPv4, IPv6 string }
+	dir := cacheDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, _ := json.Marshal(ipStore{IPv4: v4, IPv6: v6})
+	return os.WriteFile(cacheFilePath(), b, 0o644)
 }

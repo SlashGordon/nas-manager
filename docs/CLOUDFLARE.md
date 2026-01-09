@@ -126,16 +126,18 @@ nas-manager security cloudflare \
 | `--enabled` | Whether the rule is enabled | No | true |
 | `--expression` | Cloudflare filter expression | Yes | - |
 | `--position` | Rule position index in the ruleset | No | 0 |
+| `--skip-unchanged` | Skip API call when public IPs are unchanged (applies when using placeholders) | No | true |
 
 ## How It Works
 
 1. **Fetch Public IPs**: The tool queries multiple IP services to get your current IPv4 and IPv6 addresses
 2. **Replace Placeholders**: Any placeholders in your expression are replaced with actual IP addresses
-3. **Check Existing Rule**: If `--rule-id` is provided, the tool checks if the rule exists
-4. **Create or Update**: 
+3. **Skip When Unchanged (optional)**: If `--skip-unchanged` is enabled and your expression contains placeholders, the command compares current public IPv4/IPv6 to the last successful run and skips the API call if both are unchanged. Cache: `~/.nas-manager/cache/cloudflare-ip.json` (or `$XDG_CACHE_HOME/nas-manager`)
+4. **Check Existing Rule**: If `--rule-id` is provided, the tool checks if the rule exists
+5. **Create or Update**: 
    - If the rule doesn't exist or no rule ID is provided, a new rule is created
    - If the rule exists, it's updated with the new configuration
-5. **Confirmation**: The tool displays the result with the rule ID and configuration
+6. **Confirmation**: The tool displays the result with the rule ID and configuration
 
 ## Finding Your IDs
 
@@ -237,5 +239,28 @@ nas-manager security cloudflare \
   --ruleset-id="$RULESET_ID" \
   --rule-id="$RULE_ID" \
   --action="block" \
-  --expression='not ip.src in {{{PUBLIC_IPV4}}}'
+  --skip-unchanged=true \
+  --expression='not ip.src in {{{PUBLIC_IPV6_NETWORK/64}} {{PUBLIC_IPV4}}}'
+```
+
+## Skip Unchanged IPs
+
+To avoid unnecessary Cloudflare API calls when your public IPs haven’t changed:
+
+- Enable (default): `--skip-unchanged=true`
+- Disable to force update: `--skip-unchanged=false`
+- Works only when the expression contains dynamic placeholders like `{{PUBLIC_IPV4}}`, `{{PUBLIC_IPV6}}`, or `{{PUBLIC_IPV6_NETWORK/64}}`
+- Cache file: `~/.nas-manager/cache/cloudflare-ip.json` (or `$XDG_CACHE_HOME/nas-manager`)
+
+### Example
+
+```bash
+nas-manager security cloudflare \
+  --zone-id="YOUR_ZONE_ID" \
+  --ruleset-id="YOUR_RULESET_ID" \
+  --rule-id="YOUR_RULE_ID" \
+  --action="block" \
+  --enabled=true \
+  --skip-unchanged=true \
+  --expression='not ip.src in {{{PUBLIC_IPV6_NETWORK/64}} {{PUBLIC_IPV4}}}'
 ```
