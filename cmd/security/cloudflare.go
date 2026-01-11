@@ -368,13 +368,21 @@ var CloudflareCmd = &cobra.Command{
 			}
 		}
 
-		// Skip API call if IPs unchanged and expression uses dynamic placeholders
+		// Skip API call if IPs unchanged and rule configuration unchanged
 		usesDynamic := strings.Contains(cfExpr, "{{PUBLIC_")
-		if cfSkipUnchanged && usesDynamic {
-			lastV4, lastV6, _ := readLastIPs()
-			if ipv4 == lastV4 && ipv6 == lastV6 {
-				log.Info("No public IP change detected; skipping Cloudflare API call")
-				return nil
+		if cfSkipUnchanged {
+			if lastCache, err := readLastCache(); err == nil {
+				// Check if both IPs and rule configuration are unchanged
+				ipsUnchanged := (!usesDynamic || (ipv4 == lastCache.IPv4 && ipv6 == lastCache.IPv6))
+				ruleUnchanged := cfExpr == lastCache.Expression &&
+					cfAction == lastCache.Action &&
+					cfEnabled == lastCache.Enabled &&
+					cfRuleID == lastCache.RuleID
+
+				if ipsUnchanged && ruleUnchanged {
+					log.Info("No changes detected (IPs and rule configuration unchanged); skipping Cloudflare API call")
+					return nil
+				}
 			}
 		}
 
@@ -430,9 +438,17 @@ var CloudflareCmd = &cobra.Command{
 		log.Infof("Action: %s", result.Action)
 		log.Infof("Enabled: %v", result.Enabled)
 
-		// Persist current IPs for future change detection
+		// Persist current IPs and rule configuration for future change detection
 		if cfSkipUnchanged {
-			_ = writeLastIPs(ipv4, ipv6)
+			cache := &cloudflareCache{
+				IPv4:       ipv4,
+				IPv6:       ipv6,
+				Expression: cfExpr,
+				Action:     cfAction,
+				Enabled:    cfEnabled,
+				RuleID:     cfRuleID,
+			}
+			_ = writeCache(cache)
 		}
 
 		return nil
@@ -475,26 +491,55 @@ func cacheFilePath() string {
 	return filepath.Join(cacheDir(), "cloudflare-ip.json")
 }
 
+type cloudflareCache struct {
+	IPv4       string `json:"ipv4"`
+	IPv6       string `json:"ipv6"`
+	Expression string `json:"expression"`
+	Action     string `json:"action"`
+	Enabled    bool   `json:"enabled"`
+	RuleID     string `json:"rule_id"`
+}
+
 func readLastIPs() (string, string, error) {
-	type ipStore struct{ IPv4, IPv6 string }
 	path := cacheFilePath()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", "", err
 	}
-	var s ipStore
+	var s cloudflareCache
 	if err := json.Unmarshal(b, &s); err != nil {
 		return "", "", err
 	}
 	return s.IPv4, s.IPv6, nil
 }
 
+func readLastCache() (*cloudflareCache, error) {
+	path := cacheFilePath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var s cloudflareCache
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
 func writeLastIPs(v4, v6 string) error {
-	type ipStore struct{ IPv4, IPv6 string }
 	dir := cacheDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	b, _ := json.Marshal(ipStore{IPv4: v4, IPv6: v6})
+	b, _ := json.Marshal(cloudflareCache{IPv4: v4, IPv6: v6})
+	return os.WriteFile(cacheFilePath(), b, 0o644)
+}
+
+func writeCache(cache *cloudflareCache) error {
+	dir := cacheDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, _ := json.Marshal(cache)
 	return os.WriteFile(cacheFilePath(), b, 0o644)
 }
