@@ -2,8 +2,12 @@
 set -e
 
 # NAS Manager installer script
+# Usage: ./install.sh [version]
+# Example: ./install.sh v1.0.0
+# If no version is specified, the latest release will be installed
 REPO="SlashGordon/nas-manager"
 BINARY_NAME="nas-manager"
+VERSION="${1:-latest}"
 
 # Detect OS and architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -20,9 +24,16 @@ case $OS in
     *) echo "Unsupported OS: $OS"; exit 1 ;;
 esac
 
-# Get latest release
-LATEST_URL="https://api.github.com/repos/$REPO/releases/latest"
-DOWNLOAD_URL=$(curl -s $LATEST_URL | grep "browser_download_url.*$BINARY_NAME-$OS-$ARCH" | cut -d '"' -f 4)
+# Get release URL
+if [ "$VERSION" = "latest" ]; then
+    echo "Fetching latest release..."
+    RELEASE_URL="https://api.github.com/repos/$REPO/releases/latest"
+else
+    echo "Fetching release $VERSION..."
+    RELEASE_URL="https://api.github.com/repos/$REPO/releases/tags/$VERSION"
+fi
+
+DOWNLOAD_URL=$(curl -s $RELEASE_URL | grep "browser_download_url.*$BINARY_NAME-$OS-$ARCH" | cut -d '"' -f 4)
 
 if [ -z "$DOWNLOAD_URL" ]; then
     echo "Could not find binary for $OS-$ARCH"
