@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/SlashGordon/nas-manager/internal/fs"
@@ -32,13 +34,13 @@ var updateCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		currentIP, err := getCurrentIP()
+		currentIP, err := getCurrentIP(ddnsRecordType, ddnsIPv4, ddnsIPv6)
 		if err != nil {
 			fmt.Printf("Failed to get current IP: %v\n", err)
 			os.Exit(1)
 		}
 
-		recordID, currentRecordIP, err := getDNSRecord(config)
+		recordID, currentRecordIP, err := getDNSRecord(config, ddnsRecordType)
 		if err != nil {
 			fmt.Printf("Failed to get DNS record: %v\n", err)
 			os.Exit(1)
@@ -50,7 +52,7 @@ var updateCmd = &cobra.Command{
 			return
 		}
 
-		if err := updateDNSRecord(config, recordID, currentIP); err != nil {
+		if err := updateDNSRecord(config, recordID, ddnsRecordType, currentIP); err != nil {
 			fmt.Printf("%s update failed: %v\n", config.CFRecordName, err)
 			os.Exit(1)
 		}
@@ -59,6 +61,12 @@ var updateCmd = &cobra.Command{
 		logDDNS(fmt.Sprintf("Updated %s %s → %s", config.CFRecordName, currentRecordIP, currentIP))
 	},
 }
+
+var (
+	ddnsRecordType string
+	ddnsIPv4       string
+	ddnsIPv6       string
+)
 
 type DDNSConfig struct {
 	CFToken      string
@@ -74,21 +82,82 @@ func getDDNSConfig() DDNSConfig {
 	}
 }
 
-func getCurrentIP() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func getCurrentIP(recordType, ipv4Override, ipv6Override string) (string, error) {
+	recordType = strings.ToUpper(strings.TrimSpace(recordType))
+	if recordType == "" {
+		recordType = "A"
+	}
+	if recordType != "A" && recordType != "AAAA" {
+		return "", fmt.Errorf("invalid --type %q (must be A or AAAA)", recordType)
+	}
+
+	if ipv4Override != "" {
+		ip := net.ParseIP(strings.TrimSpace(ipv4Override))
+		if ip == nil || ip.To4() == nil {
+			return "", fmt.Errorf("invalid IPv4 address for --ip: %q", ipv4Override)
+		}
+	}
+	if ipv6Override != "" {
+		ip := net.ParseIP(strings.TrimSpace(ipv6Override))
+		if ip == nil || ip.To4() != nil {
+			return "", fmt.Errorf("invalid IPv6 address for --ipv6: %q", ipv6Override)
+		}
+	}
+
+	// If any override is provided, skip online lookup entirely.
+	if ipv4Override != "" || ipv6Override != "" {
+		if recordType == "A" {
+			if strings.TrimSpace(ipv4Override) == "" {
+				return "", fmt.Errorf("--type A requires --ip when skipping online lookup")
+			}
+			return strings.TrimSpace(ipv4Override), nil
+		}
+		if strings.TrimSpace(ipv6Override) == "" {
+			return "", fmt.Errorf("--type AAAA requires --ipv6 when skipping online lookup")
+		}
+		return strings.TrimSpace(ipv6Override), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	ipv4, _, err := utils.GetPublicIP(ctx)
+
+	ip, err := utils.Retry[string](ctx, utils.RetryOptions{
+		Attempts:  6,
+		BaseDelay: 1 * time.Second,
+		MaxDelay:  8 * time.Second,
+		ExceededError: func(_ int, _ error) error {
+			if recordType == "A" {
+				return fmt.Errorf("unable to determine public IPv4 after retries")
+			}
+			return fmt.Errorf("unable to determine public IPv6 after retries")
+		},
+	}, func(ctx context.Context) (string, bool, error) {
+		v4, v6, err := utils.GetPublicIP(ctx)
+		if err != nil {
+			return "", false, err
+		}
+		if recordType == "A" {
+			if strings.TrimSpace(v4) == "" {
+				return "", true, nil
+			}
+			return v4, false, nil
+		}
+		if strings.TrimSpace(v6) == "" {
+			return "", true, nil
+		}
+		return v6, false, nil
+	})
 	if err != nil {
 		return "", err
 	}
-	return ipv4, nil
+	return ip, nil
 }
 
-func updateDNSRecord(config DDNSConfig, recordID, newIP string) error {
+func updateDNSRecord(config DDNSConfig, recordID, recordType, newIP string) error {
 	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", config.CFZoneID, recordID)
 
 	data := map[string]interface{}{
-		"type":    "A",
+		"type":    recordType,
 		"name":    config.CFRecordName,
 		"content": newIP,
 		"ttl":     1,
@@ -132,8 +201,8 @@ func updateDNSRecord(config DDNSConfig, recordID, newIP string) error {
 	return nil
 }
 
-func getDNSRecord(config DDNSConfig) (string, string, error) {
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?name=%s&type=A", config.CFZoneID, config.CFRecordName)
+func getDNSRecord(config DDNSConfig, recordType string) (string, string, error) {
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?name=%s&type=%s", config.CFZoneID, config.CFRecordName, recordType)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -166,7 +235,7 @@ func getDNSRecord(config DDNSConfig) (string, string, error) {
 		}
 	}
 
-	return "", "", fmt.Errorf("%s record %s not found", "A", config.CFRecordName)
+	return "", "", fmt.Errorf("%s record %s not found", recordType, config.CFRecordName)
 }
 
 func logDDNS(message string) {
@@ -192,5 +261,8 @@ func logDDNS(message string) {
 
 func init() {
 	ddnsCmd.AddCommand(updateCmd)
+	updateCmd.Flags().StringVar(&ddnsRecordType, "type", "A", "DNS record type to update (A or AAAA)")
+	updateCmd.Flags().StringVar(&ddnsIPv4, "ip", "", "Public IPv4 address to use (skips online lookup)")
+	updateCmd.Flags().StringVar(&ddnsIPv6, "ipv6", "", "Public IPv6 address to use (skips online lookup)")
 	rootCmd.AddCommand(ddnsCmd)
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -113,7 +114,8 @@ func getIPv6InterfaceIdentifier(ipv6 string) string {
 }
 
 // ReplacePlaceholders replaces placeholders in expressions with actual values
-func ReplacePlaceholders(expression string, ipv4, ipv6 string) string {
+// Returns the replaced string and an error if required placeholders cannot be replaced
+func ReplacePlaceholders(expression string, ipv4, ipv6 string) (string, error) {
 	replacer := strings.NewReplacer(
 		"{{PUBLIC_IPV4}}", ipv4,
 		"{{PUBLIC_IPV6}}", ipv6,
@@ -122,6 +124,9 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) string {
 
 	result := replacer.Replace(expression)
 
+	// Track if we have missing placeholders
+	var missingPlaceholders []string
+
 	// Support {{PUBLIC_IPV4/24}} notation for CIDR blocks
 	cidrRegex := regexp.MustCompile(`\{\{PUBLIC_IPV4/(\d+)\}\}`)
 	result = cidrRegex.ReplaceAllStringFunc(result, func(match string) string {
@@ -129,6 +134,7 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) string {
 		if ipv4 != "" {
 			return fmt.Sprintf("%s/%s", ipv4, cidr)
 		}
+		missingPlaceholders = append(missingPlaceholders, match)
 		return match
 	})
 
@@ -138,12 +144,20 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) string {
 		if ipv6 != "" {
 			return fmt.Sprintf("%s/%s", ipv6, cidr)
 		}
+		missingPlaceholders = append(missingPlaceholders, match)
 		return match
 	})
 
 	// Support {{PUBLIC_IPV6_NETWORK}} for network identifier (first 64 bits)
 	networkRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_NETWORK\}\}`)
-	result = networkRegex.ReplaceAllString(result, getIPv6NetworkIdentifier(ipv6))
+	if networkRegex.MatchString(result) {
+		network := getIPv6NetworkIdentifier(ipv6)
+		if network == "" {
+			missingPlaceholders = append(missingPlaceholders, "{{PUBLIC_IPV6_NETWORK}}")
+		} else {
+			result = networkRegex.ReplaceAllString(result, network)
+		}
+	}
 
 	// Support {{PUBLIC_IPV6_NETWORK/prefix}} for network identifier with custom prefix
 	networkCIDRRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_NETWORK/(\d+)\}\}`)
@@ -155,14 +169,34 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) string {
 			network = strings.TrimSuffix(network, "::")
 			return fmt.Sprintf("%s::/%s", network, cidr)
 		}
+		missingPlaceholders = append(missingPlaceholders, match)
 		return match
 	})
 
 	// Support {{PUBLIC_IPV6_INTERFACE}} for interface identifier (last 64 bits)
 	interfaceRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_INTERFACE\}\}`)
-	result = interfaceRegex.ReplaceAllString(result, getIPv6InterfaceIdentifier(ipv6))
+	if interfaceRegex.MatchString(result) {
+		interfaceID := getIPv6InterfaceIdentifier(ipv6)
+		if interfaceID == "" {
+			missingPlaceholders = append(missingPlaceholders, "{{PUBLIC_IPV6_INTERFACE}}")
+		} else {
+			result = interfaceRegex.ReplaceAllString(result, interfaceID)
+		}
+	}
 
-	return result
+	// Check for basic placeholders that might not have been replaced
+	if ipv4 == "" && strings.Contains(result, "{{PUBLIC_IPV4}}") {
+		missingPlaceholders = append(missingPlaceholders, "{{PUBLIC_IPV4}}")
+	}
+	if ipv6 == "" && strings.Contains(result, "{{PUBLIC_IPV6}}") {
+		missingPlaceholders = append(missingPlaceholders, "{{PUBLIC_IPV6}}")
+	}
+
+	if len(missingPlaceholders) > 0 {
+		return result, fmt.Errorf("unable to replace placeholders (missing IP addresses): %s", strings.Join(missingPlaceholders, ", "))
+	}
+
+	return result, nil
 }
 
 // doRequest performs an HTTP request to Cloudflare API
@@ -326,7 +360,35 @@ var (
 	cfEnabled   bool
 	cfExpr      string
 	cfPosition  int
+	cfIP        string
+	cfIPv6      string
 )
+
+type publicIPFetcher func(ctx context.Context) (ipv4, ipv6 string, err error)
+
+func resolvePublicIPs(ctx context.Context, ipv4Override, ipv6Override string, fetcher publicIPFetcher) (string, string, error) {
+	if ipv4Override != "" {
+		ip := net.ParseIP(strings.TrimSpace(ipv4Override))
+		if ip == nil || ip.To4() == nil {
+			return "", "", fmt.Errorf("invalid IPv4 address for --ip: %q", ipv4Override)
+		}
+	}
+	if ipv6Override != "" {
+		ip := net.ParseIP(strings.TrimSpace(ipv6Override))
+		if ip == nil || ip.To4() != nil {
+			return "", "", fmt.Errorf("invalid IPv6 address for --ipv6: %q", ipv6Override)
+		}
+	}
+
+	if ipv4Override != "" || ipv6Override != "" {
+		return strings.TrimSpace(ipv4Override), strings.TrimSpace(ipv6Override), nil
+	}
+
+	if fetcher == nil {
+		return "", "", fmt.Errorf("no public IP fetcher provided")
+	}
+	return fetcher(ctx)
+}
 
 // CloudflareCmd represents the cloudflare command
 var CloudflareCmd = &cobra.Command{
@@ -354,22 +416,67 @@ var CloudflareCmd = &cobra.Command{
 			return fmt.Errorf("action and expression are required")
 		}
 
-		// Get public IPs
-		log.Info("Fetching public IP addresses...")
-		ipv4, ipv6, err := utils.GetPublicIP(ctx)
-		if err != nil {
-			log.Warnf("Failed to get public IPs: %v", err)
-		} else {
-			if ipv4 != "" {
-				log.Infof("Public IPv4: %s", ipv4)
+		// Resolve public IPs (only when needed)
+		usesDynamic := strings.Contains(cfExpr, "{{PUBLIC_")
+		requireIPv4 := usesDynamic && (strings.Contains(cfExpr, "{{PUBLIC_IP}}") || strings.Contains(cfExpr, "{{PUBLIC_IPV4"))
+		requireIPv6 := usesDynamic && strings.Contains(cfExpr, "{{PUBLIC_IPV6")
+
+		var ipv4, ipv6 string
+		if cfIP != "" || cfIPv6 != "" {
+			log.Info("Using IP addresses provided via flags; skipping online lookup")
+			resolvedV4, resolvedV6, err := resolvePublicIPs(ctx, cfIP, cfIPv6, utils.GetPublicIP)
+			if err != nil {
+				return err
 			}
-			if ipv6 != "" {
-				log.Infof("Public IPv6: %s", ipv6)
+			ipv4, ipv6 = resolvedV4, resolvedV6
+		} else if usesDynamic {
+			log.Info("Fetching public IP addresses...")
+			type ipPair struct{ v4, v6 string }
+			pair, err := utils.Retry[ipPair](ctx, utils.RetryOptions{
+				Attempts:  6,
+				BaseDelay: 1 * time.Second,
+				MaxDelay:  8 * time.Second,
+				OnRetry: func(attempt int, nextDelay time.Duration, _ error) {
+					if log != nil {
+						log.Infof("Public IP not ready yet; retrying in %s (%d/%d)", nextDelay, attempt, 6)
+					}
+				},
+				ExceededError: func(attempts int, _ error) error {
+					var missing []string
+					if requireIPv4 {
+						missing = append(missing, "IPv4")
+					}
+					if requireIPv6 {
+						missing = append(missing, "IPv6")
+					}
+					return fmt.Errorf("unable to determine required public IP(s) after %d attempt(s): %s", attempts, strings.Join(missing, ", "))
+				},
+			}, func(ctx context.Context) (ipPair, bool, error) {
+				v4, v6, err := resolvePublicIPs(ctx, "", "", utils.GetPublicIP)
+				if err != nil {
+					return ipPair{}, false, err
+				}
+				missingV4 := requireIPv4 && strings.TrimSpace(v4) == ""
+				missingV6 := requireIPv6 && strings.TrimSpace(v6) == ""
+				if missingV4 || missingV6 {
+					return ipPair{v4: v4, v6: v6}, true, nil
+				}
+				return ipPair{v4: v4, v6: v6}, false, nil
+			})
+			if err != nil {
+				return err
 			}
+			ipv4, ipv6 = pair.v4, pair.v6
+		}
+
+		if ipv4 != "" {
+			log.Infof("Public IPv4: %s", ipv4)
+		}
+		if ipv6 != "" {
+			log.Infof("Public IPv6: %s", ipv6)
 		}
 
 		// Skip API call if IPs unchanged and rule configuration unchanged
-		usesDynamic := strings.Contains(cfExpr, "{{PUBLIC_")
 		if cfSkipUnchanged {
 			if lastCache, err := readLastCache(); err == nil {
 				// Check if both IPs and rule configuration are unchanged
@@ -387,7 +494,10 @@ var CloudflareCmd = &cobra.Command{
 		}
 
 		// Replace placeholders in expression
-		expression := ReplacePlaceholders(cfExpr, ipv4, ipv6)
+		expression, err := ReplacePlaceholders(cfExpr, ipv4, ipv6)
+		if err != nil {
+			return fmt.Errorf("failed to replace placeholders in expression: %w", err)
+		}
 		if expression != cfExpr {
 			log.Info("Expression after placeholder replacement:")
 			log.Info(expression)
@@ -458,13 +568,20 @@ var CloudflareCmd = &cobra.Command{
 func init() {
 	CloudflareCmd.Flags().StringVar(&cfZoneID, "zone-id", "", "Cloudflare Zone ID (required)")
 	CloudflareCmd.Flags().StringVar(&cfRulesetID, "ruleset-id", "", "Cloudflare Ruleset ID (required)")
-	CloudflareCmd.Flags().StringVar(&cfRuleID, "rule-id", "", "Cloudflare Rule ID (for update)")
-	CloudflareCmd.Flags().StringVar(&cfAction, "action", "block", "Rule action (block, challenge, js_challenge, etc.)")
-	CloudflareCmd.Flags().StringVar(&cfDesc, "description", "", "Rule description")
-	CloudflareCmd.Flags().BoolVar(&cfEnabled, "enabled", true, "Enable the rule")
-	CloudflareCmd.Flags().StringVar(&cfExpr, "expression", "", "Rule expression (required, supports {{PUBLIC_IP}}, {{PUBLIC_IPV4}}, {{PUBLIC_IPV6}} placeholders)")
-	CloudflareCmd.Flags().IntVar(&cfPosition, "position", 0, "Rule position index (0 for default)")
-	CloudflareCmd.Flags().BoolVar(&cfSkipUnchanged, "skip-unchanged", true, "Skip API call when public IPs have not changed since last successful run")
+	CloudflareCmd.Flags().StringVar(&cfRuleID, "rule-id", "", "Cloudflare Rule ID (updates an existing rule; omit to always create a new rule)")
+	CloudflareCmd.Flags().StringVar(&cfAction, "action", "block", "Rule action (block, challenge, js_challenge, managed_challenge, etc.)")
+	CloudflareCmd.Flags().StringVar(&cfDesc, "description", "", "Rule description (shown in Cloudflare UI)")
+	CloudflareCmd.Flags().BoolVar(&cfEnabled, "enabled", true, "Enable or disable the rule")
+	CloudflareCmd.Flags().StringVar(&cfIP, "ip", "", "Public IPv4 address to use (skips online lookup)")
+	CloudflareCmd.Flags().StringVar(&cfIPv6, "ipv6", "", "Public IPv6 address to use (skips online lookup)")
+	CloudflareCmd.Flags().StringVar(
+		&cfExpr,
+		"expression",
+		"",
+		"Rule expression (required). Supports placeholders: {{PUBLIC_IP}} (IPv4), {{PUBLIC_IPV4}}, {{PUBLIC_IPV6}}, {{PUBLIC_IPV4/24}}, {{PUBLIC_IPV6/64}}, {{PUBLIC_IPV6_NETWORK}}, {{PUBLIC_IPV6_NETWORK/64}}, {{PUBLIC_IPV6_INTERFACE}}. If a placeholder cannot be resolved (e.g., no IPv6), the command fails.",
+	)
+	CloudflareCmd.Flags().IntVar(&cfPosition, "position", 0, "Rule position index within the ruleset (0 keeps Cloudflare default)")
+	CloudflareCmd.Flags().BoolVar(&cfSkipUnchanged, "skip-unchanged", true, "Skip Cloudflare API call when IPs and rule configuration are unchanged (uses a local cache)")
 
 	CloudflareCmd.MarkFlagRequired("zone-id")
 	CloudflareCmd.MarkFlagRequired("ruleset-id")

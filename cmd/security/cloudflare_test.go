@@ -11,6 +11,7 @@ func TestReplacePlaceholders(t *testing.T) {
 		ipv4       string
 		ipv6       string
 		expected   string
+		wantErr    bool
 	}{
 		{
 			name:       "Replace PUBLIC_IP with IPv4",
@@ -93,11 +94,39 @@ func TestReplacePlaceholders(t *testing.T) {
 			expected: "(not ip.src in {2001:db8:abcd:1234::/64} and http.host wildcard \"internal.example.com\") or " +
 				"(ip.src in {::5678:90ab:cdef:1234})",
 		},
+		{
+			name:       "Error when IPv6 network placeholder but no IPv6",
+			expression: "ip.src in {{{PUBLIC_IPV6_NETWORK/64}}}",
+			ipv4:       "203.0.113.1",
+			ipv6:       "",
+			expected:   "ip.src in {{{PUBLIC_IPV6_NETWORK/64}}}",
+			wantErr:    true,
+		},
+		{
+			name:       "Error when IPv6 CIDR placeholder but no IPv6",
+			expression: "ip.src in {{{PUBLIC_IPV6/64}}}",
+			ipv4:       "203.0.113.1",
+			ipv6:       "",
+			expected:   "ip.src in {{{PUBLIC_IPV6/64}}}",
+			wantErr:    true,
+		},
+		{
+			name:       "Error when IPv4 CIDR placeholder but no IPv4",
+			expression: "ip.src in {{{PUBLIC_IPV4/24}}}",
+			ipv4:       "",
+			ipv6:       "2001:db8::1",
+			expected:   "ip.src in {{{PUBLIC_IPV4/24}}}",
+			wantErr:    true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ReplacePlaceholders(tt.expression, tt.ipv4, tt.ipv6)
+			result, err := ReplacePlaceholders(tt.expression, tt.ipv4, tt.ipv6)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ReplacePlaceholders() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
 			if result != tt.expected {
 				t.Errorf("ReplacePlaceholders() = %v, want %v", result, tt.expected)
 			}
