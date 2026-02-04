@@ -132,15 +132,19 @@ func getCurrentIP(recordType, ipv4Override, ipv6Override string) (string, error)
 			return fmt.Errorf("unable to determine public IPv6 after retries")
 		},
 	}, func(ctx context.Context) (string, bool, error) {
-		v4, v6, err := utils.GetPublicIP(ctx)
-		if err != nil {
-			return "", false, err
-		}
 		if recordType == "A" {
+			v4, err := utils.GetPublicIPv4(ctx)
+			if err != nil {
+				return "", false, err
+			}
 			if strings.TrimSpace(v4) == "" {
 				return "", true, nil
 			}
 			return v4, false, nil
+		}
+		v6, err := utils.GetPublicIPv6(ctx)
+		if err != nil {
+			return "", false, err
 		}
 		if strings.TrimSpace(v6) == "" {
 			return "", true, nil

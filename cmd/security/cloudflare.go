@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,17 +83,29 @@ func NewCloudflareClient(apiToken string) *CloudflareClient {
 }
 
 // getIPv6NetworkIdentifier extracts the network identifier (first 64 bits) from an IPv6 address
-func getIPv6NetworkIdentifier(ipv6 string) string {
+func getIPv6NetworkIdentifier(ipv6 string, prefix int) (string, error) {
 	if ipv6 == "" {
-		return ""
+		return "", nil
 	}
-	// Split the IPv6 address into parts
-	parts := strings.Split(ipv6, ":")
-	if len(parts) < 4 {
-		return ""
+	if prefix < 0 || prefix > 128 {
+		return "", fmt.Errorf("invalid IPv6 prefix %d (must be 0-128)", prefix)
 	}
-	// Take first 4 parts (64 bits) and add :: to indicate network prefix
-	return strings.Join(parts[:4], ":") + "::"
+
+	ip := net.ParseIP(strings.TrimSpace(ipv6))
+	if ip == nil {
+		return "", fmt.Errorf("invalid IPv6 address: %q", ipv6)
+	}
+	if ip.To4() != nil {
+		return "", fmt.Errorf("not an IPv6 address: %q", ipv6)
+	}
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return "", fmt.Errorf("invalid IPv6 address: %q", ipv6)
+	}
+
+	mask := net.CIDRMask(prefix, 128)
+	network := ip16.Mask(mask)
+	return network.String(), nil
 }
 
 // getIPv6InterfaceIdentifier extracts the interface identifier (last 64 bits) from an IPv6 address
@@ -116,9 +129,19 @@ func getIPv6InterfaceIdentifier(ipv6 string) string {
 // ReplacePlaceholders replaces placeholders in expressions with actual values
 // Returns the replaced string and an error if required placeholders cannot be replaced
 func ReplacePlaceholders(expression string, ipv4, ipv6 string) (string, error) {
+	return ReplacePlaceholdersWithIPv6Prefix(expression, ipv4, ipv6, 64)
+}
+
+// ReplacePlaceholdersWithIPv6Prefix behaves like ReplacePlaceholders but allows configuring
+// the default prefix length used for {{PUBLIC_IPV6_NETWORK}}.
+func ReplacePlaceholdersWithIPv6Prefix(expression string, ipv4, ipv6 string, ipv6Prefix int) (string, error) {
+	return replacePlaceholdersAdvanced(expression, ipv4, ipv6, ipv6, ipv6Prefix)
+}
+
+func replacePlaceholdersAdvanced(expression string, ipv4, ipv6Addr, ipv6NetworkSource string, ipv6NetworkDefaultPrefix int) (string, error) {
 	replacer := strings.NewReplacer(
 		"{{PUBLIC_IPV4}}", ipv4,
-		"{{PUBLIC_IPV6}}", ipv6,
+		"{{PUBLIC_IPV6}}", ipv6Addr,
 		"{{PUBLIC_IP}}", ipv4, // Default to IPv4
 	)
 
@@ -141,8 +164,8 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) (string, error) {
 	cidrRegex6 := regexp.MustCompile(`\{\{PUBLIC_IPV6/(\d+)\}\}`)
 	result = cidrRegex6.ReplaceAllStringFunc(result, func(match string) string {
 		cidr := cidrRegex6.FindStringSubmatch(match)[1]
-		if ipv6 != "" {
-			return fmt.Sprintf("%s/%s", ipv6, cidr)
+		if ipv6Addr != "" {
+			return fmt.Sprintf("%s/%s", ipv6Addr, cidr)
 		}
 		missingPlaceholders = append(missingPlaceholders, match)
 		return match
@@ -151,7 +174,10 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) (string, error) {
 	// Support {{PUBLIC_IPV6_NETWORK}} for network identifier (first 64 bits)
 	networkRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_NETWORK\}\}`)
 	if networkRegex.MatchString(result) {
-		network := getIPv6NetworkIdentifier(ipv6)
+		network, nErr := getIPv6NetworkIdentifier(ipv6NetworkSource, ipv6NetworkDefaultPrefix)
+		if nErr != nil {
+			return result, nErr
+		}
 		if network == "" {
 			missingPlaceholders = append(missingPlaceholders, "{{PUBLIC_IPV6_NETWORK}}")
 		} else {
@@ -163,20 +189,24 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) (string, error) {
 	networkCIDRRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_NETWORK/(\d+)\}\}`)
 	result = networkCIDRRegex.ReplaceAllStringFunc(result, func(match string) string {
 		cidr := networkCIDRRegex.FindStringSubmatch(match)[1]
-		network := getIPv6NetworkIdentifier(ipv6)
-		if network != "" {
-			// Remove trailing :: and add CIDR notation
-			network = strings.TrimSuffix(network, "::")
-			return fmt.Sprintf("%s::/%s", network, cidr)
+		prefix := 0
+		if _, err := fmt.Sscanf(cidr, "%d", &prefix); err != nil {
+			missingPlaceholders = append(missingPlaceholders, match)
+			return match
+		}
+		network, nErr := getIPv6NetworkIdentifier(ipv6NetworkSource, prefix)
+		if nErr == nil && network != "" {
+			return fmt.Sprintf("%s/%s", network, cidr)
 		}
 		missingPlaceholders = append(missingPlaceholders, match)
 		return match
 	})
 
+
 	// Support {{PUBLIC_IPV6_INTERFACE}} for interface identifier (last 64 bits)
 	interfaceRegex := regexp.MustCompile(`\{\{PUBLIC_IPV6_INTERFACE\}\}`)
 	if interfaceRegex.MatchString(result) {
-		interfaceID := getIPv6InterfaceIdentifier(ipv6)
+		interfaceID := getIPv6InterfaceIdentifier(ipv6Addr)
 		if interfaceID == "" {
 			missingPlaceholders = append(missingPlaceholders, "{{PUBLIC_IPV6_INTERFACE}}")
 		} else {
@@ -188,7 +218,7 @@ func ReplacePlaceholders(expression string, ipv4, ipv6 string) (string, error) {
 	if ipv4 == "" && strings.Contains(result, "{{PUBLIC_IPV4}}") {
 		missingPlaceholders = append(missingPlaceholders, "{{PUBLIC_IPV4}}")
 	}
-	if ipv6 == "" && strings.Contains(result, "{{PUBLIC_IPV6}}") {
+	if ipv6Addr == "" && strings.Contains(result, "{{PUBLIC_IPV6}}") {
 		missingPlaceholders = append(missingPlaceholders, "{{PUBLIC_IPV6}}")
 	}
 
@@ -362,9 +392,46 @@ var (
 	cfPosition  int
 	cfIP        string
 	cfIPv6      string
+	cfIPv6Prefix string
 )
 
 type publicIPFetcher func(ctx context.Context) (ipv4, ipv6 string, err error)
+
+type parsedIPv6Override struct {
+	ip         string
+	prefix     int
+	wasCIDR    bool
+	hasPrefix  bool
+}
+
+func parseIPv6Override(value string) (parsedIPv6Override, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return parsedIPv6Override{}, nil
+	}
+
+	if strings.Contains(trimmed, "/") {
+		ip, ipNet, err := net.ParseCIDR(trimmed)
+		if err != nil {
+			return parsedIPv6Override{}, fmt.Errorf("invalid IPv6 CIDR for --ipv6: %q", value)
+		}
+		if ip == nil || ip.To4() != nil {
+			return parsedIPv6Override{}, fmt.Errorf("invalid IPv6 CIDR for --ipv6: %q", value)
+		}
+		prefix, bits := ipNet.Mask.Size()
+		if bits != 128 {
+			return parsedIPv6Override{}, fmt.Errorf("invalid IPv6 CIDR for --ipv6: %q", value)
+		}
+		network := ip.Mask(ipNet.Mask)
+		return parsedIPv6Override{ip: network.String(), prefix: prefix, wasCIDR: true, hasPrefix: true}, nil
+	}
+
+	ip := net.ParseIP(trimmed)
+	if ip == nil || ip.To4() != nil {
+		return parsedIPv6Override{}, fmt.Errorf("invalid IPv6 address for --ipv6: %q", value)
+	}
+	return parsedIPv6Override{ip: trimmed, wasCIDR: false, hasPrefix: false}, nil
+}
 
 func resolvePublicIPs(ctx context.Context, ipv4Override, ipv6Override string, fetcher publicIPFetcher) (string, string, error) {
 	if ipv4Override != "" {
@@ -416,23 +483,84 @@ var CloudflareCmd = &cobra.Command{
 			return fmt.Errorf("action and expression are required")
 		}
 
-		// Resolve public IPs (only when needed)
-		usesDynamic := strings.Contains(cfExpr, "{{PUBLIC_")
-		requireIPv4 := usesDynamic && (strings.Contains(cfExpr, "{{PUBLIC_IP}}") || strings.Contains(cfExpr, "{{PUBLIC_IPV4"))
-		requireIPv6 := usesDynamic && strings.Contains(cfExpr, "{{PUBLIC_IPV6")
+		// IPv6 prefix support:
+		// - --ipv6 can be an IPv6 address or an IPv6 CIDR (prefix)
+		// - --ipv6-prefix is a string that can be either:
+		//     * an IPv6 CIDR (preferred, e.g. 2a01:...::/56)
+		//     * a numeric prefix length (backwards compatible)
+		//
+		// When only a prefix is provided, we skip online IPv6 lookup and only support
+		// network placeholders ({{PUBLIC_IPV6_NETWORK...}}).
+		ipv6AddrOverride := ""
+		ipv6NetworkOverride := ""
+		ipv6NetworkDefaultPrefix := 64
+		ipv6ProvidedAsPrefixOnly := false
 
-		var ipv4, ipv6 string
-		if cfIP != "" || cfIPv6 != "" {
-			log.Info("Using IP addresses provided via flags; skipping online lookup")
-			resolvedV4, resolvedV6, err := resolvePublicIPs(ctx, cfIP, cfIPv6, utils.GetPublicIP)
+	// Parse --ipv6-prefix first (it has priority for network placeholders)
+	if strings.TrimSpace(cfIPv6Prefix) != "" {
+		prefixVal := strings.TrimSpace(cfIPv6Prefix)
+		// Try CIDR first if it looks like an address.
+		if strings.Contains(prefixVal, ":") || strings.Contains(prefixVal, "/") {
+			parsed, err := parseIPv6Override(prefixVal)
 			if err != nil {
 				return err
 			}
-			ipv4, ipv6 = resolvedV4, resolvedV6
-		} else if usesDynamic {
-			log.Info("Fetching public IP addresses...")
-			type ipPair struct{ v4, v6 string }
-			pair, err := utils.Retry[ipPair](ctx, utils.RetryOptions{
+			if !parsed.wasCIDR || !parsed.hasPrefix {
+				return fmt.Errorf("--ipv6-prefix must be an IPv6 CIDR like 2a01:...::/56 (or a numeric prefix length)")
+			}
+			ipv6NetworkOverride = parsed.ip
+			ipv6NetworkDefaultPrefix = parsed.prefix
+			ipv6ProvidedAsPrefixOnly = true
+		} else {
+			prefixLen, err := strconv.Atoi(prefixVal)
+			if err != nil || prefixLen < 0 || prefixLen > 128 {
+				return fmt.Errorf("invalid --ipv6-prefix %q (must be an IPv6 CIDR like 2a01:...::/56 or a number 0-128)", cfIPv6Prefix)
+			}
+			ipv6NetworkDefaultPrefix = prefixLen
+		}
+	}
+
+	// Parse --ipv6 (address or CIDR)
+	if strings.TrimSpace(cfIPv6) != "" {
+		parsed, err := parseIPv6Override(cfIPv6)
+		if err != nil {
+			return err
+		}
+		if parsed.wasCIDR {
+			// Only use this as the network source if --ipv6-prefix CIDR wasn't provided.
+			if ipv6NetworkOverride == "" {
+				ipv6NetworkOverride = parsed.ip
+				ipv6NetworkDefaultPrefix = parsed.prefix
+				ipv6ProvidedAsPrefixOnly = true
+			}
+		} else {
+			ipv6AddrOverride = parsed.ip
+		}
+	}
+
+		// Resolve public IPs (only when needed)
+		usesDynamic := strings.Contains(cfExpr, "{{PUBLIC_")
+		requireIPv4 := usesDynamic && (strings.Contains(cfExpr, "{{PUBLIC_IP}}") || strings.Contains(cfExpr, "{{PUBLIC_IPV4"))
+		needsIPv6Address := usesDynamic && (strings.Contains(cfExpr, "{{PUBLIC_IPV6}}") || strings.Contains(cfExpr, "{{PUBLIC_IPV6/") || strings.Contains(cfExpr, "{{PUBLIC_IPV6_INTERFACE}}"))
+		needsIPv6Network := usesDynamic && strings.Contains(cfExpr, "{{PUBLIC_IPV6_NETWORK")
+
+		if ipv6ProvidedAsPrefixOnly && needsIPv6Address && ipv6AddrOverride == "" {
+			return fmt.Errorf("IPv6 was provided only as a prefix (CIDR); placeholders requiring a full IPv6 address are not supported (use {{PUBLIC_IPV6_NETWORK}} or provide a full IPv6 address via --ipv6)")
+		}
+
+		var ipv4, ipv6Addr string
+		ipv4 = strings.TrimSpace(cfIP)
+		ipv6Addr = strings.TrimSpace(ipv6AddrOverride)
+
+		if usesDynamic {
+			if ipv4 != "" || ipv6Addr != "" || ipv6NetworkOverride != "" {
+				log.Info("Using IP data provided via flags; skipping online lookups where possible")
+			} else {
+				log.Info("Fetching public IP addresses...")
+			}
+
+			type ipState struct{ v4, v6 string }
+			state, err := utils.Retry[ipState](ctx, utils.RetryOptions{
 				Attempts:  6,
 				BaseDelay: 1 * time.Second,
 				MaxDelay:  8 * time.Second,
@@ -446,41 +574,62 @@ var CloudflareCmd = &cobra.Command{
 					if requireIPv4 {
 						missing = append(missing, "IPv4")
 					}
-					if requireIPv6 {
+					if needsIPv6Address || (needsIPv6Network && ipv6NetworkOverride == "") {
 						missing = append(missing, "IPv6")
 					}
 					return fmt.Errorf("unable to determine required public IP(s) after %d attempt(s): %s", attempts, strings.Join(missing, ", "))
 				},
-			}, func(ctx context.Context) (ipPair, bool, error) {
-				v4, v6, err := resolvePublicIPs(ctx, "", "", utils.GetPublicIP)
-				if err != nil {
-					return ipPair{}, false, err
+			}, func(ctx context.Context) (ipState, bool, error) {
+				cur := ipState{v4: ipv4, v6: ipv6Addr}
+				if requireIPv4 && strings.TrimSpace(cur.v4) == "" {
+					v4, err := utils.GetPublicIPv4(ctx)
+					if err != nil {
+						return cur, false, err
+					}
+					cur.v4 = v4
 				}
-				missingV4 := requireIPv4 && strings.TrimSpace(v4) == ""
-				missingV6 := requireIPv6 && strings.TrimSpace(v6) == ""
-				if missingV4 || missingV6 {
-					return ipPair{v4: v4, v6: v6}, true, nil
+				if needsIPv6Address && strings.TrimSpace(cur.v6) == "" {
+					v6, err := utils.GetPublicIPv6(ctx)
+					if err != nil {
+						return cur, false, err
+					}
+					cur.v6 = v6
 				}
-				return ipPair{v4: v4, v6: v6}, false, nil
+				// If only a network is needed and no network override exists, the IPv6 address is sufficient
+				if needsIPv6Network && ipv6NetworkOverride == "" && strings.TrimSpace(cur.v6) == "" {
+					v6, err := utils.GetPublicIPv6(ctx)
+					if err != nil {
+						return cur, false, err
+					}
+					cur.v6 = v6
+				}
+
+				missingV4 := requireIPv4 && strings.TrimSpace(cur.v4) == ""
+				missingV6Addr := needsIPv6Address && strings.TrimSpace(cur.v6) == ""
+				missingV6Network := needsIPv6Network && ipv6NetworkOverride == "" && strings.TrimSpace(cur.v6) == ""
+				if missingV4 || missingV6Addr || missingV6Network {
+					return cur, true, nil
+				}
+				return cur, false, nil
 			})
 			if err != nil {
 				return err
 			}
-			ipv4, ipv6 = pair.v4, pair.v6
+			ipv4, ipv6Addr = state.v4, state.v6
 		}
 
 		if ipv4 != "" {
 			log.Infof("Public IPv4: %s", ipv4)
 		}
-		if ipv6 != "" {
-			log.Infof("Public IPv6: %s", ipv6)
+		if ipv6Addr != "" {
+			log.Infof("Public IPv6: %s", ipv6Addr)
 		}
 
 		// Skip API call if IPs unchanged and rule configuration unchanged
 		if cfSkipUnchanged {
 			if lastCache, err := readLastCache(); err == nil {
 				// Check if both IPs and rule configuration are unchanged
-				ipsUnchanged := (!usesDynamic || (ipv4 == lastCache.IPv4 && ipv6 == lastCache.IPv6))
+				ipsUnchanged := (!usesDynamic || (ipv4 == lastCache.IPv4 && ipv6Addr == lastCache.IPv6))
 				ruleUnchanged := cfExpr == lastCache.Expression &&
 					cfAction == lastCache.Action &&
 					cfEnabled == lastCache.Enabled &&
@@ -494,7 +643,13 @@ var CloudflareCmd = &cobra.Command{
 		}
 
 		// Replace placeholders in expression
-		expression, err := ReplacePlaceholders(cfExpr, ipv4, ipv6)
+		// Compute source used for IPv6 network placeholders.
+		ipv6NetworkSource := ipv6NetworkOverride
+		if ipv6NetworkSource == "" {
+			ipv6NetworkSource = ipv6Addr
+		}
+
+		expression, err := replacePlaceholdersAdvanced(cfExpr, ipv4, ipv6Addr, ipv6NetworkSource, ipv6NetworkDefaultPrefix)
 		if err != nil {
 			return fmt.Errorf("failed to replace placeholders in expression: %w", err)
 		}
@@ -552,7 +707,7 @@ var CloudflareCmd = &cobra.Command{
 		if cfSkipUnchanged {
 			cache := &cloudflareCache{
 				IPv4:       ipv4,
-				IPv6:       ipv6,
+				IPv6:       ipv6Addr,
 				Expression: cfExpr,
 				Action:     cfAction,
 				Enabled:    cfEnabled,
@@ -574,6 +729,7 @@ func init() {
 	CloudflareCmd.Flags().BoolVar(&cfEnabled, "enabled", true, "Enable or disable the rule")
 	CloudflareCmd.Flags().StringVar(&cfIP, "ip", "", "Public IPv4 address to use (skips online lookup)")
 	CloudflareCmd.Flags().StringVar(&cfIPv6, "ipv6", "", "Public IPv6 address to use (skips online lookup)")
+	CloudflareCmd.Flags().StringVar(&cfIPv6Prefix, "ipv6-prefix", "", "IPv6 prefix as CIDR (e.g. 2a01:...::/56). Skips online IPv6 lookup and powers {{PUBLIC_IPV6_NETWORK}}. For backwards compatibility you can also pass a numeric prefix length (0-128).")
 	CloudflareCmd.Flags().StringVar(
 		&cfExpr,
 		"expression",
