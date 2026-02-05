@@ -52,9 +52,13 @@ func (p *FritzBoxSOAPProvider) GetPublicIPv6(ctx context.Context) (string, error
 	if err != nil {
 		return "", err
 	}
-	ip, _, err := parseFritzBoxIPv6Response(resp)
+	ip, prefixLen, err := parseFritzBoxIPv6Response(resp)
 	if err != nil {
 		return "", err
+	}
+	// If FritzBox returns only a prefix (host portion is zeros), try to build a full address
+	if ip != "" && prefixLen > 0 && prefixLen < 128 {
+		ip = ensureFullIPv6Address(ip, prefixLen)
 	}
 	return ip, nil
 }
@@ -146,6 +150,89 @@ func parseFritzBoxIPv6Response(data []byte) (ip string, prefixLen int, err error
 	}
 
 	return ipStr, prefixLen, nil
+}
+
+// ensureFullIPv6Address checks if the given IPv6 address has a zeroed host portion
+// (indicating it's just a prefix). If so, it attempts to combine it with the local
+// interface's IPv6 address suffix to create a complete address for Cloudflare.
+func ensureFullIPv6Address(ip string, prefixLen int) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ip
+	}
+	ip16 := parsed.To16()
+	if ip16 == nil {
+		return ip
+	}
+
+	// Check if the host portion (bits after prefixLen) is all zeros
+	mask := net.CIDRMask(prefixLen, 128)
+	hostAllZeros := true
+	for i := 0; i < 16; i++ {
+		hostBits := ip16[i] & ^mask[i]
+		if hostBits != 0 {
+			hostAllZeros = false
+			break
+		}
+	}
+
+	// If host portion has non-zero bits, the address is already complete
+	if !hostAllZeros {
+		return ip
+	}
+
+	// Host portion is all zeros - try to get interface ID from local IPv6 addresses
+	interfaceID := getLocalIPv6InterfaceID(prefixLen)
+	if interfaceID == nil {
+		return ip // Can't get local interface ID, return as-is
+	}
+
+	// Combine the prefix with the local interface ID
+	for i := 0; i < 16; i++ {
+		ip16[i] = (ip16[i] & mask[i]) | (interfaceID[i] & ^mask[i])
+	}
+
+	return ip16.String()
+}
+
+// getLocalIPv6InterfaceID returns the interface identifier portion from a local
+// global IPv6 address that can be used to complete a prefix-only address.
+func getLocalIPv6InterfaceID(prefixLen int) net.IP {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	for _, iface := range interfaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipNet.IP.To16()
+			if ip == nil || ip.To4() != nil {
+				continue // Skip non-IPv6
+			}
+			// Skip link-local (fe80::/10) and unique local (fc00::/7) addresses
+			if ip[0] == 0xfe && (ip[1]&0xc0) == 0x80 {
+				continue
+			}
+			if (ip[0] & 0xfe) == 0xfc {
+				continue
+			}
+			// Found a global IPv6 address - return it for interface ID extraction
+			return ip
+		}
+	}
+	return nil
 }
 
 func extractXMLLocalNameText(data []byte, localName string) (string, error) {

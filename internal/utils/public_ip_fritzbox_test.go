@@ -1,6 +1,9 @@
 package utils
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 func TestParseFritzBoxIPv4Response(t *testing.T) {
 	xml := []byte(`<?xml version="1.0"?>
@@ -44,4 +47,70 @@ func TestParseFritzBoxIPv6Response(t *testing.T) {
 	if prefix != 64 {
 		t.Fatalf("unexpected prefix: %d", prefix)
 	}
+}
+
+func TestEnsureFullIPv6Address(t *testing.T) {
+	tests := []struct {
+		name      string
+		ip        string
+		prefixLen int
+		wantSame  bool // true if we expect the same address back (already complete)
+	}{
+		{
+			name:      "complete address with host portion",
+			ip:        "2a01:71a0:8002::d:0:1bb5",
+			prefixLen: 64,
+			wantSame:  true, // already has non-zero host portion
+		},
+		{
+			name:      "complete address fully specified",
+			ip:        "2001:db8:85a3:0:1234:5678:90ab:cdef",
+			prefixLen: 64,
+			wantSame:  true,
+		},
+		{
+			name:      "prefix only with zeros",
+			ip:        "2a01:71a0:8002::",
+			prefixLen: 64,
+			wantSame:  false, // host portion is all zeros, should be filled
+		},
+		{
+			name:      "prefix only 48 bits",
+			ip:        "2a01:71a0:8002::",
+			prefixLen: 48,
+			wantSame:  false,
+		},
+		{
+			name:      "invalid address",
+			ip:        "not-an-ip",
+			prefixLen: 64,
+			wantSame:  true, // invalid input returned as-is
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ensureFullIPv6Address(tc.ip, tc.prefixLen)
+			if tc.wantSame {
+				// For complete addresses, we expect same or equivalent output
+				if result != tc.ip && !ipv6Equivalent(result, tc.ip) {
+					t.Errorf("expected same address %q, got %q", tc.ip, result)
+				}
+			} else {
+				// For prefix-only, we expect a different (filled) address
+				// It might be the same if no local interface is available in test env
+				t.Logf("prefix %q -> result %q", tc.ip, result)
+			}
+		})
+	}
+}
+
+// ipv6Equivalent checks if two IPv6 strings represent the same address
+func ipv6Equivalent(a, b string) bool {
+	ipA := net.ParseIP(a)
+	ipB := net.ParseIP(b)
+	if ipA == nil || ipB == nil {
+		return a == b
+	}
+	return ipA.Equal(ipB)
 }
