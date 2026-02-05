@@ -43,7 +43,26 @@ func (p *FritzBoxSOAPProvider) GetPublicIPv4(ctx context.Context) (string, error
 }
 
 func (p *FritzBoxSOAPProvider) GetPublicIPv6(ctx context.Context) (string, error) {
+	// First, get the delegated IPv6 prefix (this is what LAN devices use)
 	resp, err := fritzBoxSOAPRequest(ctx,
+		p.URL,
+		p.Timeout,
+		"urn:schemas-upnp-org:service:WANIPConnection:1#X_AVM_DE_GetIPv6Prefix",
+		fritzBoxSOAPBodyGetIPv6Prefix,
+	)
+	if err == nil {
+		prefix, prefixLen, parseErr := parseFritzBoxIPv6PrefixResponse(resp)
+		if parseErr == nil && prefix != "" && prefixLen > 0 {
+			// Combine the delegated prefix with local interface ID
+			fullIP := buildIPv6FromPrefix(prefix, prefixLen)
+			if fullIP != "" {
+				return fullIP, nil
+			}
+		}
+	}
+
+	// Fallback: get the router's external IPv6 address
+	resp, err = fritzBoxSOAPRequest(ctx,
 		p.URL,
 		p.Timeout,
 		"urn:schemas-upnp-org:service:WANIPConnection:1#X_AVM_DE_GetExternalIPv6Address",
@@ -75,6 +94,14 @@ const fritzBoxSOAPBodyGetExternalIPv6Address = `<?xml version="1.0" encoding="ut
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
     <u:X_AVM_DE_GetExternalIPv6Address xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1" />
+  </s:Body>
+</s:Envelope>
+`
+
+const fritzBoxSOAPBodyGetIPv6Prefix = `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:X_AVM_DE_GetIPv6Prefix xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1" />
   </s:Body>
 </s:Envelope>
 `
@@ -150,6 +177,76 @@ func parseFritzBoxIPv6Response(data []byte) (ip string, prefixLen int, err error
 	}
 
 	return ipStr, prefixLen, nil
+}
+
+// parseFritzBoxIPv6PrefixResponse parses the X_AVM_DE_GetIPv6Prefix response.
+// This returns the delegated prefix (e.g., 2a01:71a0:8406:7600::/56) that LAN devices use.
+func parseFritzBoxIPv6PrefixResponse(data []byte) (prefix string, prefixLen int, err error) {
+	prefixStr, err := extractXMLLocalNameText(data, "NewIPv6Prefix")
+	if err != nil {
+		return "", 0, err
+	}
+	prefixStr = strings.TrimSpace(prefixStr)
+	if prefixStr == "" {
+		return "", 0, nil
+	}
+
+	// The prefix might be in CIDR notation (2a01:71a0:8406:7600::/56) or just the address
+	if strings.Contains(prefixStr, "/") {
+		parts := strings.SplitN(prefixStr, "/", 2)
+		prefixStr = parts[0]
+		if len(parts) == 2 {
+			p, convErr := strconv.Atoi(parts[1])
+			if convErr == nil && p >= 0 && p <= 128 {
+				prefixLen = p
+			}
+		}
+	}
+
+	parsed := net.ParseIP(prefixStr)
+	if parsed == nil || parsed.To4() != nil {
+		return "", 0, fmt.Errorf("invalid IPv6 prefix from fritzbox: %q", prefixStr)
+	}
+
+	// Also check for separate PrefixLength field if not in CIDR notation
+	if prefixLen == 0 {
+		lenStr, _ := extractXMLLocalNameText(data, "NewPrefixLength")
+		lenStr = strings.TrimSpace(lenStr)
+		if lenStr != "" {
+			p, convErr := strconv.Atoi(lenStr)
+			if convErr == nil && p >= 0 && p <= 128 {
+				prefixLen = p
+			}
+		}
+	}
+
+	return prefixStr, prefixLen, nil
+}
+
+// buildIPv6FromPrefix combines an IPv6 prefix with the local interface ID to create a full address.
+func buildIPv6FromPrefix(prefix string, prefixLen int) string {
+	prefixIP := net.ParseIP(prefix)
+	if prefixIP == nil {
+		return ""
+	}
+	prefix16 := prefixIP.To16()
+	if prefix16 == nil {
+		return ""
+	}
+
+	interfaceID := getLocalIPv6InterfaceID(prefixLen)
+	if interfaceID == nil {
+		return ""
+	}
+
+	// Combine prefix with interface ID
+	mask := net.CIDRMask(prefixLen, 128)
+	result := make(net.IP, 16)
+	for i := 0; i < 16; i++ {
+		result[i] = (prefix16[i] & mask[i]) | (interfaceID[i] & ^mask[i])
+	}
+
+	return result.String()
 }
 
 // ensureFullIPv6Address checks if the given IPv6 address has a zeroed host portion

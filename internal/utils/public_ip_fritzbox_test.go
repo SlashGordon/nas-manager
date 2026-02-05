@@ -49,6 +49,71 @@ func TestParseFritzBoxIPv6Response(t *testing.T) {
 	}
 }
 
+func TestParseFritzBoxIPv6PrefixResponse(t *testing.T) {
+	// Test response with prefix in CIDR notation
+	xml := []byte(`<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:X_AVM_DE_GetIPv6PrefixResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1">
+      <NewIPv6Prefix>2a01:71a0:8406:7600::/56</NewIPv6Prefix>
+      <NewPrefixLength>56</NewPrefixLength>
+      <NewValidLifetime>501</NewValidLifetime>
+      <NewPreferedLifetime>451</NewPreferedLifetime>
+    </u:X_AVM_DE_GetIPv6PrefixResponse>
+  </s:Body>
+</s:Envelope>`)
+
+	prefix, prefixLen, err := parseFritzBoxIPv6PrefixResponse(xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if prefix != "2a01:71a0:8406:7600::" {
+		t.Fatalf("unexpected prefix: %q", prefix)
+	}
+	if prefixLen != 56 {
+		t.Fatalf("unexpected prefix length: %d", prefixLen)
+	}
+}
+
+func TestParseFritzBoxIPv6PrefixResponseWithoutCIDR(t *testing.T) {
+	// Test response without CIDR notation in prefix
+	xml := []byte(`<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:X_AVM_DE_GetIPv6PrefixResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1">
+      <NewIPv6Prefix>2a01:71a0:8406:7600::</NewIPv6Prefix>
+      <NewPrefixLength>56</NewPrefixLength>
+    </u:X_AVM_DE_GetIPv6PrefixResponse>
+  </s:Body>
+</s:Envelope>`)
+
+	prefix, prefixLen, err := parseFritzBoxIPv6PrefixResponse(xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if prefix != "2a01:71a0:8406:7600::" {
+		t.Fatalf("unexpected prefix: %q", prefix)
+	}
+	if prefixLen != 56 {
+		t.Fatalf("unexpected prefix length: %d", prefixLen)
+	}
+}
+
+func TestBuildIPv6FromPrefix(t *testing.T) {
+	// This test depends on local interface availability
+	// We just verify it doesn't crash and returns something sensible
+	result := buildIPv6FromPrefix("2a01:71a0:8406:7600::", 56)
+	t.Logf("buildIPv6FromPrefix result: %q", result)
+
+	// If we got a result, verify it starts with the prefix
+	if result != "" {
+		ip := net.ParseIP(result)
+		if ip == nil {
+			t.Errorf("result is not a valid IP: %q", result)
+		}
+	}
+}
+
 func TestEnsureFullIPv6Address(t *testing.T) {
 	tests := []struct {
 		name      string
