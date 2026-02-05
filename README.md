@@ -43,10 +43,13 @@ Download the appropriate binary for your system from the releases page.
 ## Configuration
 
 Configuration is loaded in this priority order:
-1. `NAS_CONFIG` environment variable (custom path)
-2. `.nasrc` in working directory
-3. `.nasrc` in home directory
-4. Environment variables
+1. `--config /path/to/file` (env-style `KEY=VALUE` file)
+2. `NAS_MANAGER_CONFIG` environment variable (custom path)
+3. `NAS_CONFIG` environment variable (backwards compatible)
+4. `.nasrc` in working directory
+5. `env.nas` in working directory (if present)
+6. `~/.nasrc`
+7. Environment variables
 
 Copy `.nasrc.example` to `.nasrc` and set your credentials:
 
@@ -57,7 +60,22 @@ cp .nasrc.example .nasrc
 
 Or use a custom config path:
 ```bash
-NAS_CONFIG=/path/to/config nas-manager ddns update
+nas-manager --config /path/to/config ddns update
+```
+
+### Public IP providers
+
+Some commands can resolve `{{PUBLIC_IPV4}}` / `{{PUBLIC_IPV6}}` automatically.
+You can control the lookup strategy via config/env:
+
+- `NAS_MANAGER_PUBLIC_IP_PROVIDERS` — comma-separated, in order. Supported: `fritzbox-soap`, `external-http`.
+- `NAS_MANAGER_FRITZBOX_WANIPCONN_URL` — FritzBox SOAP URL (default: `http://fritz.box:49000/igdupnp/control/WANIPConn1`).
+- `NAS_MANAGER_FRITZBOX_TIMEOUT` — Go duration (e.g. `1500ms`, `3s`).
+
+Example:
+```bash
+NAS_MANAGER_PUBLIC_IP_PROVIDERS=fritzbox-soap,external-http
+NAS_MANAGER_FRITZBOX_TIMEOUT=3s
 ```
 
 Required environment variables:

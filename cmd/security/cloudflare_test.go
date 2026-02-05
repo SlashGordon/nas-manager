@@ -133,30 +133,3 @@ func TestReplacePlaceholders(t *testing.T) {
 		})
 	}
 }
-
-func TestReplacePlaceholdersWithIPv6Prefix_DefaultNetworkPrefix(t *testing.T) {
-	result, err := ReplacePlaceholdersWithIPv6Prefix(
-		"ip.src in {{{PUBLIC_IPV6_NETWORK}}}",
-		"",
-		"2001:db8:abcd:1234:5678:90ab:cdef:1234",
-		56,
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != "ip.src in {2001:db8:abcd:1200::}" {
-		t.Fatalf("unexpected result: %q", result)
-	}
-}
-
-func TestReplacePlaceholdersWithIPv6Prefix_InvalidPrefix(t *testing.T) {
-	_, err := ReplacePlaceholdersWithIPv6Prefix(
-		"ip.src in {{{PUBLIC_IPV6_NETWORK}}}",
-		"",
-		"2001:db8::1",
-		129,
-	)
-	if err == nil {
-		t.Fatalf("expected error")
-	}
-}

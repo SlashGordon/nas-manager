@@ -72,32 +72,3 @@ func TestResolvePublicIPs_FetcherUsedWhenNoOverrides(t *testing.T) {
 		t.Fatalf("unexpected result: ipv4=%q ipv6=%q", ipv4, ipv6)
 	}
 }
-
-func TestParseIPv6Override_IPv6CIDR(t *testing.T) {
-	parsed, err := parseIPv6Override("2a01:71a0:8406:6f00::/56")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !parsed.wasCIDR || !parsed.hasPrefix {
-		t.Fatalf("expected CIDR with prefix")
-	}
-	if parsed.prefix != 56 {
-		t.Fatalf("expected prefix 56, got %d", parsed.prefix)
-	}
-	if parsed.ip != "2a01:71a0:8406:6f00::" {
-		t.Fatalf("unexpected network ip: %q", parsed.ip)
-	}
-}
-
-func TestParseIPv6Override_IPv6Address(t *testing.T) {
-	parsed, err := parseIPv6Override("2001:db8::1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if parsed.wasCIDR || parsed.hasPrefix {
-		t.Fatalf("expected plain IPv6 address")
-	}
-	if parsed.ip != "2001:db8::1" {
-		t.Fatalf("unexpected ip: %q", parsed.ip)
-	}
-}

@@ -37,3 +37,10 @@ VULNSCAN_PORTS=22,80,443,5000,5001,873,548,139,445,2049
 
 # Shell hardening
 SHELL_HIST_SIZE=3
+
+# Public IP resolution (optional)
+# Provider order matters: first non-empty result wins.
+# Supported: fritzbox-soap, external-http
+# NAS_MANAGER_PUBLIC_IP_PROVIDERS=fritzbox-soap,external-http
+# NAS_MANAGER_FRITZBOX_WANIPCONN_URL=http://fritz.box:49000/igdupnp/control/WANIPConn1
+# NAS_MANAGER_FRITZBOX_TIMEOUT=3s

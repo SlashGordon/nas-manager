@@ -22,6 +22,11 @@ var (
 // Global logger instance
 var log *logger.Logger
 
+var (
+	configFile     string
+	configOverride bool
+)
+
 // setLogger sets the global logger instance
 func setLogger(l *logger.Logger) {
 	log = l
@@ -84,7 +89,10 @@ func Execute(log *logger.Logger) {
 }
 
 func init() {
-	loadConfig()
+	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "Path to an env-style config file (KEY=VALUE). Defaults to ./env.nas if present.")
+	rootCmd.PersistentFlags().BoolVar(&configOverride, "config-override", false, "Override existing environment variables when loading --config")
+	cobra.OnInitialize(loadConfig)
+
 	rootCmd.AddCommand(acmeCmd)
 	rootCmd.AddCommand(ddnsCmd)
 	rootCmd.AddCommand(securityCmd)
