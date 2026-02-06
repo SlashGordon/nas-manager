@@ -49,6 +49,67 @@ type CloudflareRuleset struct {
 	Rules       []CloudflareRule `json:"rules"`
 }
 
+// AccessRule represents a rule condition for Zero Trust Access policies
+type AccessRule struct {
+	IP           *AccessIPRule           `json:"ip,omitempty"`
+	Email        *AccessEmailRule        `json:"email,omitempty"`
+	EmailDomain  *AccessEmailDomainRule  `json:"email_domain,omitempty"`
+	Everyone     *AccessEveryoneRule     `json:"everyone,omitempty"`
+	Group        *AccessGroupRule        `json:"group,omitempty"`
+	ServiceToken *AccessServiceTokenRule `json:"service_token,omitempty"`
+	Geo          *AccessGeoRule          `json:"geo,omitempty"`
+}
+
+// AccessIPRule represents an IP-based access rule
+type AccessIPRule struct {
+	IP string `json:"ip"`
+}
+
+// AccessEmailRule represents an email-based access rule
+type AccessEmailRule struct {
+	Email string `json:"email"`
+}
+
+// AccessEmailDomainRule represents an email domain-based access rule
+type AccessEmailDomainRule struct {
+	Domain string `json:"domain"`
+}
+
+// AccessEveryoneRule matches all users
+type AccessEveryoneRule struct{}
+
+// AccessGroupRule represents a group-based access rule
+type AccessGroupRule struct {
+	ID string `json:"id"`
+}
+
+// AccessServiceTokenRule represents a service token-based access rule
+type AccessServiceTokenRule struct {
+	TokenID string `json:"token_id"`
+}
+
+// AccessGeoRule represents a geographic access rule
+type AccessGeoRule struct {
+	CountryCode string `json:"country_code"`
+}
+
+// AccessPolicy represents a Zero Trust Access Application Policy
+type AccessPolicy struct {
+	ID                string       `json:"id,omitempty"`
+	Name              string       `json:"name"`
+	Decision          string       `json:"decision"`
+	Precedence        int          `json:"precedence,omitempty"`
+	Include           []AccessRule `json:"include"`
+	Exclude           []AccessRule `json:"exclude,omitempty"`
+	Require           []AccessRule `json:"require,omitempty"`
+	SessionDuration   string       `json:"session_duration,omitempty"`
+	PurposeJustReq    bool         `json:"purpose_justification_required,omitempty"`
+	PurposeJustPrompt string       `json:"purpose_justification_prompt,omitempty"`
+	ApprovalRequired  bool         `json:"approval_required,omitempty"`
+	CreatedAt         string       `json:"created_at,omitempty"`
+	UpdatedAt         string       `json:"updated_at,omitempty"`
+}
+
 // CloudflareResponse represents Cloudflare API response
 type CloudflareResponse struct {
 	Success  bool              `json:"success"`
@@ -369,6 +430,86 @@ func (c *CloudflareClient) UpsertRule(ctx context.Context, zoneID, rulesetID, ru
 	return updatedRule, false, nil
 }
 
+// GetAccessPolicy retrieves a Zero Trust Access Application Policy
+func (c *CloudflareClient) GetAccessPolicy(ctx context.Context, accountID, appID, policyID string) (*AccessPolicy, error) {
+	path := fmt.Sprintf("/accounts/%s/access/apps/%s/policies/%s", accountID, appID, policyID)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var policy AccessPolicy
+	if err := json.Unmarshal(resp.Result, &policy); err != nil {
+		return nil, fmt.Errorf("failed to parse access policy: %w", err)
+	}
+
+	return &policy, nil
+}
+
+// UpdateAccessPolicy updates a Zero Trust Access Application Policy
+func (c *CloudflareClient) UpdateAccessPolicy(ctx context.Context, accountID, appID, policyID string, policy AccessPolicy) (*AccessPolicy, error) {
+	path := fmt.Sprintf("/accounts/%s/access/apps/%s/policies/%s", accountID, appID, policyID)
+	resp, err := c.doRequest(ctx, http.MethodPut, path, policy)
+	if err != nil {
+		return nil, err
+	}
+
+	var updatedPolicy AccessPolicy
+	if err := json.Unmarshal(resp.Result, &updatedPolicy); err != nil {
+		return nil, fmt.Errorf("failed to parse updated access policy: %w", err)
+	}
+
+	return &updatedPolicy, nil
+}
+
+// GetReusablePolicy retrieves a Zero Trust Access Reusable Policy (account-level)
+func (c *CloudflareClient) GetReusablePolicy(ctx context.Context, accountID, policyID string) (*AccessPolicy, error) {
+	path := fmt.Sprintf("/accounts/%s/access/policies/%s", accountID, policyID)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var policy AccessPolicy
+	if err := json.Unmarshal(resp.Result, &policy); err != nil {
+		return nil, fmt.Errorf("failed to parse reusable policy: %w", err)
+	}
+
+	return &policy, nil
+}
+
+// UpdateReusablePolicy updates a Zero Trust Access Reusable Policy (account-level)
+func (c *CloudflareClient) UpdateReusablePolicy(ctx context.Context, accountID, policyID string, policy AccessPolicy) (*AccessPolicy, error) {
+	path := fmt.Sprintf("/accounts/%s/access/policies/%s", accountID, policyID)
+	resp, err := c.doRequest(ctx, http.MethodPut, path, policy)
+	if err != nil {
+		return nil, err
+	}
+
+	var updatedPolicy AccessPolicy
+	if err := json.Unmarshal(resp.Result, &updatedPolicy); err != nil {
+		return nil, fmt.Errorf("failed to parse updated reusable policy: %w", err)
+	}
+
+	return &updatedPolicy, nil
+}
+
+// ListAccessPolicies retrieves all policies for a Zero Trust Access Application
+func (c *CloudflareClient) ListAccessPolicies(ctx context.Context, accountID, appID string) ([]AccessPolicy, error) {
+	path := fmt.Sprintf("/accounts/%s/access/apps/%s/policies", accountID, appID)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var policies []AccessPolicy
+	if err := json.Unmarshal(resp.Result, &policies); err != nil {
+		return nil, fmt.Errorf("failed to parse access policies: %w", err)
+	}
+
+	return policies, nil
+}
+
 var (
 	cfZoneID    string
 	cfRulesetID string
@@ -626,6 +767,229 @@ func init() {
 	CloudflareCmd.MarkFlagRequired("zone-id")
 	CloudflareCmd.MarkFlagRequired("ruleset-id")
 	CloudflareCmd.MarkFlagRequired("expression")
+
+	// Add zerotrust-policy subcommand
+	CloudflareCmd.AddCommand(ZeroTrustPolicyCmd)
+
+	// Zero Trust Policy flags
+	ZeroTrustPolicyCmd.Flags().StringVar(&ztAccountID, "account-id", "", "Cloudflare Account ID (required)")
+	ZeroTrustPolicyCmd.Flags().StringVar(&ztAppID, "app-id", "", "Zero Trust Access Application ID (required for app policies, omit for reusable policies)")
+	ZeroTrustPolicyCmd.Flags().StringVar(&ztPolicyID, "policy-id", "", "Zero Trust Access Policy ID to update (required)")
+	ZeroTrustPolicyCmd.Flags().BoolVar(&ztReusable, "reusable", false, "Update a reusable policy (account-level) instead of an app-specific policy")
+	ZeroTrustPolicyCmd.Flags().StringVar(&ztPolicyName, "name", "", "Policy name (optional, preserves existing if not set)")
+	ZeroTrustPolicyCmd.Flags().StringVar(&ztDecision, "decision", "", "Policy decision: allow, deny, non_identity, bypass (optional)")
+	ZeroTrustPolicyCmd.Flags().StringSliceVar(&ztIncludeIPs, "include-ip", nil, "IP addresses/CIDRs to include (supports {{PUBLIC_IPV4}}, {{PUBLIC_IPV6}} placeholders)")
+	ZeroTrustPolicyCmd.Flags().StringSliceVar(&ztExcludeIPs, "exclude-ip", nil, "IP addresses/CIDRs to exclude (supports placeholders)")
+	ZeroTrustPolicyCmd.Flags().StringSliceVar(&ztIncludeEmails, "include-email", nil, "Email addresses to include in policy")
+	ZeroTrustPolicyCmd.Flags().StringSliceVar(&ztIncludeGroups, "include-group", nil, "Access Group IDs to include in policy")
+	ZeroTrustPolicyCmd.Flags().StringVar(&ztSessionDur, "session-duration", "", "Session duration (e.g., '24h', '30m')")
+	ZeroTrustPolicyCmd.Flags().IntVar(&ztPrecedence, "precedence", 0, "Policy precedence (lower numbers = higher priority)")
+	ZeroTrustPolicyCmd.Flags().StringVar(&ztIP, "ip", "", "Public IPv4 address to use (skips online lookup)")
+	ZeroTrustPolicyCmd.Flags().StringVar(&ztIPv6, "ipv6", "", "Public IPv6 address to use (skips online lookup)")
+
+	ZeroTrustPolicyCmd.MarkFlagRequired("account-id")
+	ZeroTrustPolicyCmd.MarkFlagRequired("policy-id")
+}
+
+// --- Zero Trust Policy command ---
+
+var (
+	ztAccountID     string
+	ztAppID         string
+	ztPolicyID      string
+	ztReusable      bool
+	ztPolicyName    string
+	ztDecision      string
+	ztIncludeIPs    []string
+	ztExcludeIPs    []string
+	ztIncludeEmails []string
+	ztIncludeGroups []string
+	ztSessionDur    string
+	ztPrecedence    int
+	ztIP            string
+	ztIPv6          string
+)
+
+// ZeroTrustPolicyCmd represents the zerotrust-policy subcommand
+var ZeroTrustPolicyCmd = &cobra.Command{
+	Use:   "zerotrust-policy",
+	Short: i18n.T("Update Zero Trust Access Application Policy"),
+	Long: i18n.T(`Update a Zero Trust Access Application Policy with dynamic IP support.
+
+This command updates an existing Access policy for a Zero Trust application.
+It supports both app-specific policies and reusable (account-level) policies.
+
+For app-specific policies, provide both --account-id and --app-id.
+For reusable policies, use --reusable flag (no --app-id needed).
+
+Supported placeholders in IP rules:
+  {{PUBLIC_IP}}, {{PUBLIC_IPV4}} - Current public IPv4 address
+  {{PUBLIC_IPV6}} - Current public IPv6 address
+  {{PUBLIC_IPV4/24}}, {{PUBLIC_IPV6/64}} - CIDR notation
+  {{PUBLIC_IPV6_NETWORK/64}} - IPv6 network prefix`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := context.Background()
+
+		// Get API token from environment
+		apiToken := os.Getenv("CF_AUTH_TOKEN")
+		if apiToken == "" {
+			apiToken = os.Getenv("CLOUDFLARE_API_TOKEN")
+		}
+		if apiToken == "" {
+			return fmt.Errorf("CF_AUTH_TOKEN or CLOUDFLARE_API_TOKEN environment variable is required")
+		}
+
+		// Validate required flags
+		if ztAccountID == "" {
+			return fmt.Errorf("account-id is required")
+		}
+		if !ztReusable && ztAppID == "" {
+			return fmt.Errorf("app-id is required for app-specific policies (or use --reusable for reusable policies)")
+		}
+		if ztPolicyID == "" {
+			return fmt.Errorf("policy-id is required")
+		}
+
+		// Check if we need to resolve IPs
+		needsIPResolve := false
+		allIPs := append(append([]string{}, ztIncludeIPs...), ztExcludeIPs...)
+		for _, ip := range allIPs {
+			if strings.Contains(ip, "{{PUBLIC_") {
+				needsIPResolve = true
+				break
+			}
+		}
+
+		var ipv4, ipv6 string
+		ipv4 = strings.TrimSpace(ztIP)
+		ipv6 = strings.TrimSpace(ztIPv6)
+
+		if needsIPResolve && ipv4 == "" && ipv6 == "" {
+			log.Info("Fetching public IP addresses...")
+			var err error
+			ipv4, err = utils.GetPublicIPv4(ctx)
+			if err != nil {
+				log.Warnf("Could not fetch IPv4: %v", err)
+			}
+			ipv6, err = utils.GetPublicIPv6(ctx)
+			if err != nil {
+				log.Warnf("Could not fetch IPv6: %v", err)
+			}
+		}
+
+		if ipv4 != "" {
+			log.Infof("Public IPv4: %s", ipv4)
+		}
+		if ipv6 != "" {
+			log.Infof("Public IPv6: %s", ipv6)
+		}
+
+		// Build include rules
+		var includeRules []AccessRule
+		for _, ip := range ztIncludeIPs {
+			resolvedIP, err := ReplacePlaceholders(ip, ipv4, ipv6)
+			if err != nil {
+				return fmt.Errorf("failed to replace placeholders in include IP %q: %w", ip, err)
+			}
+			includeRules = append(includeRules, AccessRule{
+				IP: &AccessIPRule{IP: resolvedIP},
+			})
+		}
+		for _, email := range ztIncludeEmails {
+			includeRules = append(includeRules, AccessRule{
+				Email: &AccessEmailRule{Email: email},
+			})
+		}
+		for _, groupID := range ztIncludeGroups {
+			includeRules = append(includeRules, AccessRule{
+				Group: &AccessGroupRule{ID: groupID},
+			})
+		}
+
+		// Build exclude rules
+		var excludeRules []AccessRule
+		for _, ip := range ztExcludeIPs {
+			resolvedIP, err := ReplacePlaceholders(ip, ipv4, ipv6)
+			if err != nil {
+				return fmt.Errorf("failed to replace placeholders in exclude IP %q: %w", ip, err)
+			}
+			excludeRules = append(excludeRules, AccessRule{
+				IP: &AccessIPRule{IP: resolvedIP},
+			})
+		}
+
+		// Get existing policy to preserve fields we're not updating
+		client := NewCloudflareClient(apiToken)
+
+		var existingPolicy *AccessPolicy
+		var err error
+
+		if ztReusable {
+			log.Info("Using reusable policy endpoint...")
+			existingPolicy, err = client.GetReusablePolicy(ctx, ztAccountID, ztPolicyID)
+		} else {
+			existingPolicy, err = client.GetAccessPolicy(ctx, ztAccountID, ztAppID, ztPolicyID)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to get existing policy: %w", err)
+		}
+
+		// Build updated policy
+		policy := AccessPolicy{
+			ID:              ztPolicyID,
+			Name:            existingPolicy.Name,
+			Decision:        existingPolicy.Decision,
+			Include:         existingPolicy.Include,
+			Exclude:         existingPolicy.Exclude,
+			Require:         existingPolicy.Require,
+			SessionDuration: existingPolicy.SessionDuration,
+			Precedence:      existingPolicy.Precedence,
+		}
+
+		// Apply updates if provided
+		if ztPolicyName != "" {
+			policy.Name = ztPolicyName
+		}
+		if ztDecision != "" {
+			policy.Decision = ztDecision
+		}
+		if len(includeRules) > 0 {
+			policy.Include = includeRules
+		}
+		if len(excludeRules) > 0 {
+			policy.Exclude = excludeRules
+		}
+		if ztSessionDur != "" {
+			policy.SessionDuration = ztSessionDur
+		}
+		if ztPrecedence > 0 {
+			policy.Precedence = ztPrecedence
+		}
+
+		// Update the policy
+		log.Infof("Updating Zero Trust Access Policy: %s", policy.Name)
+
+		var updatedPolicy *AccessPolicy
+		if ztReusable {
+			updatedPolicy, err = client.UpdateReusablePolicy(ctx, ztAccountID, ztPolicyID, policy)
+		} else {
+			updatedPolicy, err = client.UpdateAccessPolicy(ctx, ztAccountID, ztAppID, ztPolicyID, policy)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to update policy: %w", err)
+		}
+
+		log.Info("✓ Policy updated successfully!")
+		log.Infof("Policy ID: %s", updatedPolicy.ID)
+		log.Infof("Name: %s", updatedPolicy.Name)
+		log.Infof("Decision: %s", updatedPolicy.Decision)
+		log.Infof("Include rules: %d", len(updatedPolicy.Include))
+		if len(updatedPolicy.Exclude) > 0 {
+			log.Infof("Exclude rules: %d", len(updatedPolicy.Exclude))
+		}
+
+		return nil
+	},
 }
 
 // --- IP change cache helpers ---

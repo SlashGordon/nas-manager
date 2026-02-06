@@ -264,3 +264,204 @@ nas-manager security cloudflare \
   --skip-unchanged=true \
   --expression='not ip.src in {{{PUBLIC_IPV6_NETWORK/64}} {{PUBLIC_IPV4}}}'
 ```
+
+---
+
+## Zero Trust Access Policy Management
+
+The `zerotrust-policy` subcommand allows you to update Zero Trust Access policies with dynamic IP support. It supports both **app-specific policies** (tied to a single application) and **reusable policies** (account-level policies that can be shared across applications).
+
+### Features
+
+- **Update Access Policies**: Modify existing Zero Trust Access policies
+- **App-Specific & Reusable Policies**: Support for both policy types
+- **Dynamic IP Support**: Same placeholder system as WAF rules for automatic IP updates
+- **Multiple Rule Types**: Support for IP addresses, emails, and Access groups
+- **Partial Updates**: Only update the fields you specify, preserving existing configuration
+
+### Policy Types
+
+- **App-Specific Policies**: Policies created within a specific application. Require `--app-id`.
+- **Reusable Policies**: Account-level policies that can be shared across multiple applications. Use `--reusable` flag instead of `--app-id`.
+
+### Usage
+
+#### App-Specific Policy (Basic)
+
+```bash
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="YOUR_ACCOUNT_ID" \
+  --app-id="YOUR_APP_ID" \
+  --policy-id="YOUR_POLICY_ID" \
+  --include-ip="192.168.1.0/24"
+```
+
+#### Reusable Policy (Account-Level)
+
+```bash
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="YOUR_ACCOUNT_ID" \
+  --policy-id="YOUR_POLICY_ID" \
+  --reusable \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-ip="{{PUBLIC_IPV6_NETWORK/64}}"
+```
+
+#### Dynamic IP with Placeholders
+
+```bash
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="YOUR_ACCOUNT_ID" \
+  --app-id="YOUR_APP_ID" \
+  --policy-id="YOUR_POLICY_ID" \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-ip="{{PUBLIC_IPV6_NETWORK/64}}"
+```
+
+#### Multiple Include Rules
+
+```bash
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="YOUR_ACCOUNT_ID" \
+  --app-id="YOUR_APP_ID" \
+  --policy-id="YOUR_POLICY_ID" \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-ip="10.0.0.0/8" \
+  --include-email="admin@example.com" \
+  --include-group="YOUR_ACCESS_GROUP_ID"
+```
+
+#### Update Policy Decision and Session Duration
+
+```bash
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="YOUR_ACCOUNT_ID" \
+  --app-id="YOUR_APP_ID" \
+  --policy-id="YOUR_POLICY_ID" \
+  --decision="allow" \
+  --session-duration="24h" \
+  --include-ip="{{PUBLIC_IPV4}}"
+```
+
+#### With Manual IP Override
+
+```bash
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="YOUR_ACCOUNT_ID" \
+  --app-id="YOUR_APP_ID" \
+  --policy-id="YOUR_POLICY_ID" \
+  --ip="203.0.113.50" \
+  --ipv6="2001:db8::1" \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-ip="{{PUBLIC_IPV6_NETWORK/64}}"
+```
+
+### Command Options
+
+| Flag | Description | Required | Default |
+|------|-------------|----------|---------|
+| `--account-id` | Cloudflare Account ID | Yes | - |
+| `--app-id` | Zero Trust Access Application ID | Yes* | - |
+| `--policy-id` | Access Policy ID to update | Yes | - |
+| `--reusable` | Update a reusable policy (account-level) | No | false |
+| `--name` | Policy name | No | (preserved) |
+| `--decision` | Policy decision: allow, deny, non_identity, bypass | No | (preserved) |
+| `--include-ip` | IP addresses/CIDRs to include (repeatable, supports placeholders) | No | - |
+| `--exclude-ip` | IP addresses/CIDRs to exclude (repeatable, supports placeholders) | No | - |
+| `--include-email` | Email addresses to include (repeatable) | No | - |
+| `--include-group` | Access Group IDs to include (repeatable) | No | - |
+| `--session-duration` | Session duration (e.g., '24h', '30m') | No | (preserved) |
+| `--precedence` | Policy precedence (lower = higher priority) | No | (preserved) |
+| `--ip` | Manual IPv4 override (skips online lookup) | No | - |
+| `--ipv6` | Manual IPv6 override (skips online lookup) | No | - |
+
+*`--app-id` is required for app-specific policies. Use `--reusable` instead for account-level reusable policies.
+
+### Supported Placeholders
+
+Same as WAF rules:
+- `{{PUBLIC_IP}}` / `{{PUBLIC_IPV4}}` - Current public IPv4 address
+- `{{PUBLIC_IPV6}}` - Current public IPv6 address
+- `{{PUBLIC_IPV4/24}}` - IPv4 with CIDR notation
+- `{{PUBLIC_IPV6/64}}` - IPv6 with CIDR notation
+- `{{PUBLIC_IPV6_NETWORK/64}}` - IPv6 network prefix with CIDR
+
+### Finding Your IDs
+
+#### Account ID
+1. Log in to your Cloudflare dashboard
+2. Go to any domain
+3. The Account ID is shown in the right sidebar under "API"
+
+#### Application ID
+```bash
+curl -X GET "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/access/apps" \
+  -H "Authorization: Bearer $CF_AUTH_TOKEN" \
+  -H "Content-Type: application/json"
+```
+
+#### Policy ID (App-Specific)
+```bash
+curl -X GET "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/access/apps/YOUR_APP_ID/policies" \
+  -H "Authorization: Bearer $CF_AUTH_TOKEN" \
+  -H "Content-Type: application/json"
+```
+
+#### Policy ID (Reusable/Account-Level)
+```bash
+curl -X GET "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/access/policies" \
+  -H "Authorization: Bearer $CF_AUTH_TOKEN" \
+  -H "Content-Type: application/json"
+```
+
+### How to Know if Your Policy is Reusable
+
+If you get error code 12130 "can not update reusable policies through this endpoint" when using `--app-id`, your policy is a **reusable policy**. Use `--reusable` flag instead.
+
+### Real-World Examples
+
+#### Protect Internal Application with Dynamic Home IP
+
+```bash
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="YOUR_ACCOUNT_ID" \
+  --app-id="YOUR_APP_ID" \
+  --policy-id="YOUR_POLICY_ID" \
+  --decision="allow" \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-ip="{{PUBLIC_IPV6_NETWORK/64}}" \
+  --include-ip="10.0.0.0/8"
+```
+
+#### Allow Specific Users and Your Home Network
+
+```bash
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="YOUR_ACCOUNT_ID" \
+  --app-id="YOUR_APP_ID" \
+  --policy-id="YOUR_POLICY_ID" \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-email="user1@example.com" \
+  --include-email="user2@example.com"
+```
+
+#### Automation Script for Dynamic IP Updates
+
+```bash
+#!/bin/bash
+# update-zerotrust-policy.sh
+
+export CF_AUTH_TOKEN="your-token"
+
+nas-manager security cloudflare zerotrust-policy \
+  --account-id="$ACCOUNT_ID" \
+  --app-id="$APP_ID" \
+  --policy-id="$POLICY_ID" \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-ip="{{PUBLIC_IPV6_NETWORK/64}}"
+```
+
+Add to crontab:
+```
+*/30 * * * * /path/to/update-zerotrust-policy.sh >> /var/log/zerotrust-update.log 2>&1
+```

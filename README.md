@@ -95,6 +95,24 @@ Optional security variables:
 - `VULNSCAN_PORTS` - Comma-separated list of ports to scan
 - `SHELL_HIST_SIZE` - Shell history size limit (default: 3)
 
+## Cloudflare API Token Permissions
+
+Different commands require different API token permissions:
+
+### WAF Rules (`security cloudflare`)
+Required permissions:
+- **Zone.Zone WAF** - Edit
+
+### Zero Trust Access Policies (`security cloudflare zerotrust-policy`)
+Required permissions:
+- **Access: Apps and Policies** - Edit
+
+### DDNS (`ddns update`)
+Required permissions:
+- **Zone.DNS** - Edit
+
+Create your API token at: https://dash.cloudflare.com/profile/api-tokens
+
 ## New Features
 
 ### Cloudflare: Skip Unchanged Public IPs
@@ -166,6 +184,35 @@ nas-manager security harden network
 - Skip unchanged (default true): add `--skip-unchanged=false` to force an API update.
 - Basic update example:
   - `nas-manager security cloudflare --zone-id=... --ruleset-id=... --rule-id=... --action=block --enabled=true --expression='not ip.src in {{{PUBLIC_IPV6_NETWORK/64}} {{PUBLIC_IPV4}}}'`
+
+### Zero Trust Access Policy Management
+
+Update Zero Trust Access Application policies with dynamic IP support:
+
+```bash
+# Update policy with dynamic IP placeholders
+nas-manager security cloudflare zerotrust-policy \
+  --account-id=YOUR_ACCOUNT_ID \
+  --app-id=YOUR_APP_ID \
+  --policy-id=YOUR_POLICY_ID \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-ip="{{PUBLIC_IPV6_NETWORK/64}}"
+
+# Multiple rule types (IPs, emails, groups)
+nas-manager security cloudflare zerotrust-policy \
+  --account-id=YOUR_ACCOUNT_ID \
+  --app-id=YOUR_APP_ID \
+  --policy-id=YOUR_POLICY_ID \
+  --include-ip="{{PUBLIC_IPV4}}" \
+  --include-email="admin@example.com" \
+  --include-group="YOUR_ACCESS_GROUP_ID"
+```
+
+**Required API Token Permissions:**
+- Access: Apps and Policies - Read
+- Access: Apps and Policies - Edit
+
+See [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) for detailed documentation.
 ```
 
 ## Building
