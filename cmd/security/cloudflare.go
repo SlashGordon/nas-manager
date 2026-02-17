@@ -850,13 +850,16 @@ Supported placeholders in IP rules:
 			return fmt.Errorf("policy-id is required")
 		}
 
-		// Check if we need to resolve IPs
-		needsIPResolve := false
+		// Check which IPs we need to resolve based on placeholders used
+		needsIPv4 := false
+		needsIPv6 := false
 		allIPs := append(append([]string{}, ztIncludeIPs...), ztExcludeIPs...)
 		for _, ip := range allIPs {
-			if strings.Contains(ip, "{{PUBLIC_") {
-				needsIPResolve = true
-				break
+			if strings.Contains(ip, "{{PUBLIC_IPV4") || strings.Contains(ip, "{{PUBLIC_IP}}") {
+				needsIPv4 = true
+			}
+			if strings.Contains(ip, "{{PUBLIC_IPV6") {
+				needsIPv6 = true
 			}
 		}
 
@@ -864,13 +867,18 @@ Supported placeholders in IP rules:
 		ipv4 = strings.TrimSpace(ztIP)
 		ipv6 = strings.TrimSpace(ztIPv6)
 
-		if needsIPResolve && ipv4 == "" && ipv6 == "" {
-			log.Info("Fetching public IP addresses...")
+		// Fetch missing IPs that are needed for placeholders
+		if needsIPv4 && ipv4 == "" {
+			log.Info("Fetching public IPv4 address...")
 			var err error
 			ipv4, err = utils.GetPublicIPv4(ctx)
 			if err != nil {
 				log.Warnf("Could not fetch IPv4: %v", err)
 			}
+		}
+		if needsIPv6 && ipv6 == "" {
+			log.Info("Fetching public IPv6 address...")
+			var err error
 			ipv6, err = utils.GetPublicIPv6(ctx)
 			if err != nil {
 				log.Warnf("Could not fetch IPv6: %v", err)
